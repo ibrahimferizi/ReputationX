@@ -1,0 +1,16 @@
+# Root-level ignores
+.env
+.env.local
+*.log
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+*.so
+*.dll
+*.exe
