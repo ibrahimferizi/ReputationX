@@ -1,13 +1,292 @@
-html, body, #root {
+html,
+body,
+#root {
   margin: 0;
   padding: 0;
-  height: 100%;
-  width: 100%;
-  background: #111;
-  color: #fff;
-  font-family: sans-serif;
+  min-height: 100%;
+  background: #0f1115;
+  color: #f2f2f2;
+  font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 * {
   box-sizing: border-box;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 2rem 1.5rem 3rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.header h1 {
+  margin: 0 0 0.5rem;
+}
+
+.header p {
+  margin: 0;
+  color: #9aa0a6;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 1.5rem;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sidebar {
+  background: #1a1d24;
+  border: 1px solid #2d333b;
+  border-radius: 10px;
+  padding: 1rem;
+  height: fit-content;
+}
+
+.sidebar h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.sidebar-hint,
+.muted {
+  color: #8b949e;
+  font-size: 0.8rem;
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0;
+}
+
+.history-item {
+  width: 100%;
+  text-align: left;
+  background: #252a33;
+  border: 1px solid #333a45;
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+}
+
+.history-item:hover {
+  border-color: #4a9eff;
+}
+
+.history-addr {
+  display: block;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+.history-meta {
+  display: block;
+  font-size: 0.75rem;
+  color: #9aa0a6;
+  margin-top: 0.25rem;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: #6cb6ff;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+
+.main label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.main input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #333a45;
+  background: #1a1d24;
+  color: #fff;
+  margin-bottom: 1rem;
+}
+
+.primary-btn {
+  width: 100%;
+  padding: 0.85rem;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-btn:disabled {
+  background: #4b5563;
+  cursor: not-allowed;
+}
+
+.error-banner {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #7f1d1d;
+  border-radius: 8px;
+}
+
+.warn-banner {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: #422006;
+  border: 1px solid #854d0e;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.report {
+  margin-top: 2rem;
+  background: #1a1d24;
+  border: 1px solid #2d333b;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.report-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.report h2 {
+  margin: 0 0 0.25rem;
+}
+
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: #9aa0a6;
+  word-break: break-all;
+}
+
+.score-block {
+  text-align: right;
+}
+
+.score {
+  display: block;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.tier {
+  color: #6cb6ff;
+  font-weight: 600;
+}
+
+.metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.metric-row {
+  background: #12151a;
+  border: 1px solid #2d333b;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.metric-row-main {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.metric-row-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.metric-row-value {
+  color: #c9d1d9;
+  font-weight: 500;
+}
+
+.metric-row-summary {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: #8b949e;
+}
+
+.improve-toggle {
+  margin-top: 0.6rem;
+  background: #252a33;
+  border: 1px solid #444c56;
+  color: #6cb6ff;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.improve-panel {
+  margin-top: 0.6rem;
+  padding: 0.65rem 0.75rem;
+  background: #0f1115;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.improve-panel ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.token-risks {
+  list-style: none;
+  padding: 0;
+}
+
+.token-risks li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #2d333b;
+}
+
+.tag {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: #252a33;
+}
+
+.tag.danger {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.api-version {
+  margin-top: 1.5rem;
+  font-size: 0.75rem;
+  color: #6e7681;
 }
