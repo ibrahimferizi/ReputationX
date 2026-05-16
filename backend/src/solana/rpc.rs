@@ -2,7 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 
 #[derive(Clone)]
@@ -11,6 +13,8 @@ pub struct SolanaRpc {
     url: String,
     max_retries: u32,
     retry_base_ms: u64,
+    /// Limits in-flight RPC calls across all wallets (batch scans).
+    concurrency: Option<Arc<Semaphore>>,
 }
 
 impl SolanaRpc {
@@ -23,6 +27,23 @@ impl SolanaRpc {
             url: url.into(),
             max_retries,
             retry_base_ms,
+            concurrency: None,
+        }
+    }
+
+    pub fn with_concurrency(mut self, semaphore: Arc<Semaphore>) -> Self {
+        self.concurrency = Some(semaphore);
+        self
+    }
+
+    /// Same retry/concurrency settings, different RPC URL (e.g. dedicated Helius host).
+    pub fn with_url(&self, url: impl Into<String>) -> Self {
+        Self {
+            client: self.client.clone(),
+            url: url.into(),
+            max_retries: self.max_retries,
+            retry_base_ms: self.retry_base_ms,
+            concurrency: self.concurrency.clone(),
         }
     }
 
@@ -32,12 +53,24 @@ impl SolanaRpc {
         method: &str,
         params: Value,
     ) -> Result<T> {
+        let _permit = match &self.concurrency {
+            Some(sem) => Some(
+                sem.acquire()
+                    .await
+                    .context("rpc concurrency permit acquire")?,
+            ),
+            None => None,
+        };
+
         let mut attempt = 0u32;
         loop {
             match self.call_once::<T>(method, params.clone()).await {
                 Ok(value) => return Ok(value),
                 Err(err) if is_rate_limited(&err) && attempt < self.max_retries => {
-                    let wait_ms = self.retry_base_ms.saturating_mul(2u64.saturating_pow(attempt));
+                    let wait_ms = self
+                        .retry_base_ms
+                        .saturating_mul(2u64.saturating_pow(attempt))
+                        .max(1_500);
                     tracing::warn!(
                         method,
                         attempt = attempt + 1,

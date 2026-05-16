@@ -29,7 +29,13 @@ pub async fn get_reputation(
 
     solana::validate_address(address).map_err(|_| ApiError::InvalidAddress)?;
 
-    let report = build_wallet_reputation(&state.http, &state.rpc, &state.config, address)
+    let report = build_wallet_reputation(
+        &state.http,
+        &state.rpc,
+        &state.history_rpc,
+        &state.config,
+        address,
+    )
         .await
         .map_err(ApiError::internal)?;
 

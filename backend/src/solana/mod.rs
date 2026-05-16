@@ -1,7 +1,10 @@
+pub mod funding;
 pub mod helius;
 pub mod rpc;
 pub mod transactions;
 pub mod wallet;
+
+pub use funding::{get_funding_source, FundingSource};
 
 use anyhow::{anyhow, Result};
 

@@ -1,7 +1,8 @@
 use crate::analysis::improvements::build_improvement_steps;
 use crate::analysis::risk::{
     assess_balance, assess_burst, assess_defi, assess_nfts, assess_spacing, assess_token_risk,
-    assess_tx_count, assess_wallet_age, compute_reputation_score, score_to_tier, MetricAssessment,
+    assess_tx_count, assess_wallet_age, compute_reputation_score, raw_to_trust_rating,
+    MetricAssessment,
 };
 use crate::config::Config;
 use crate::integrations::{scan_wallet_tokens, ExternalScans};
@@ -9,6 +10,7 @@ use crate::models::response::{
     DefiExposure, LegacyReputationResponse, MetricDto, ReputationResponse, TokenRiskDto,
     TxStats, WalletAge,
 };
+use crate::solana::funding::get_funding_source;
 use crate::solana::rpc::SolanaRpc;
 use crate::solana::transactions::get_transactions;
 use crate::solana::wallet::{get_balance, get_token_holdings};
@@ -25,15 +27,19 @@ const KNOWN_DEFI_PROGRAMS: &[&str] = &[
 pub async fn build_wallet_reputation(
     http: &Client,
     rpc: &SolanaRpc,
+    history_rpc: &SolanaRpc,
     config: &Config,
     address: &str,
 ) -> Result<ReputationResponse> {
     // Core on-chain data in parallel (typically 2–4s in fast mode).
-    let (balance, history, holdings) = tokio::try_join!(
+    let (balance, history, holdings, funding_source) = tokio::join!(
         get_balance(rpc, address),
-        get_transactions(rpc, http, config, address),
-        get_token_holdings(rpc, address)
-    )?;
+        get_transactions(rpc, history_rpc, http, config, address),
+        get_token_holdings(rpc, address),
+        get_funding_source(address, history_rpc, config),
+    );
+
+    let (balance, history, holdings) = (balance?, history?, holdings?);
 
     let external = if config.skip_external_scans || holdings.mints.is_empty() {
         ExternalScans {
@@ -60,7 +66,11 @@ pub async fn build_wallet_reputation(
     let burst_high = history.max_txs_per_hour >= 15 && history.wallet_age_days < 14.0;
 
     let metrics: Vec<MetricAssessment> = vec![
-        assess_wallet_age(history.wallet_age_days, history.count_capped),
+        assess_wallet_age(
+            history.wallet_age_days,
+            history.age_capped,
+            history.first_activity_unix.is_none(),
+        ),
         assess_tx_count(
             history.total_count,
             history.count_capped,
@@ -84,13 +94,13 @@ pub async fn build_wallet_reputation(
         external.high_risk_tokens,
     );
 
-    let (reputation_score, tier) = score_to_tier(reputation_score);
+    let trust = raw_to_trust_rating(reputation_score);
     let improvement_steps = build_improvement_steps(&metrics);
 
     let legacy = LegacyReputationResponse {
-        reputation_score,
-        tier: tier.clone(),
-        celestila_tier: tier.clone(),
+        reputation_score: trust.score,
+        tier: trust.label.clone(),
+        trust_label: trust.label.clone(),
         balance: crate::models::response::Balance { sol: balance.sol },
         tx_stats: TxStats {
             count: history.total_count,
@@ -101,6 +111,7 @@ pub async fn build_wallet_reputation(
             days: history.wallet_age_days.floor() as u64,
             days_precise: history.wallet_age_days,
             first_activity_unix: history.first_activity_unix,
+            age_capped: history.age_capped,
         },
         nft_stats: crate::models::response::NftStats {
             count: holdings.estimated_nft_count as u64,
@@ -117,7 +128,13 @@ pub async fn build_wallet_reputation(
         metrics: metrics.into_iter().map(MetricDto::from).collect(),
         improvement_steps,
         token_risks: map_token_risks(&external),
-        integrations: integration_status(config, &history.scan_source, &external),
+        integrations: integration_status(
+            config,
+            &history.scan_source,
+            &history.age_source,
+            &external,
+        ),
+        funding_source,
         api_version: "walletguard-v1".into(),
     })
 }
@@ -145,12 +162,18 @@ fn map_token_risks(external: &ExternalScans) -> Vec<TokenRiskDto> {
 
 fn integration_status(
     config: &Config,
-    scan_source: &str,
+    tx_scan_source: &str,
+    age_source: &str,
     external: &ExternalScans,
 ) -> serde_json::Value {
     serde_json::json!({
         "scan_mode": format!("{:?}", config.scan_mode).to_ascii_lowercase(),
-        "tx_scan_source": scan_source,
+        "max_signature_pages": config.max_signature_pages,
+        "max_age_signature_pages": config.max_age_signature_pages,
+        "history_rpc_gtfa": crate::solana::helius::gtfa_rpc_url(config).is_some(),
+        "age_source": age_source,
+        "signature_page_size": config.signature_page_size,
+        "tx_scan_source": tx_scan_source,
         "external_scans_skipped": config.skip_external_scans,
         "rugcheck": external.rugcheck.iter().any(|r| r.available),
         "solsniffer": external.solsniffer.iter().any(|r| r.available),

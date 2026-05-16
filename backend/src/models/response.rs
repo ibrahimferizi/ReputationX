@@ -1,4 +1,5 @@
 use crate::analysis::risk::{MetricAssessment, RiskLevel};
+use crate::solana::FundingSource;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -18,6 +19,8 @@ pub struct WalletAge {
     pub days: u64,
     pub days_precise: f64,
     pub first_activity_unix: Option<i64>,
+    /// True when signature pagination hit MAX_SIGNATURE_PAGES before reaching genesis.
+    pub age_capped: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,9 +37,11 @@ pub struct DefiExposure {
 /// Fields the existing React UI already reads.
 #[derive(Debug, Serialize)]
 pub struct LegacyReputationResponse {
+    /// WalletGuard trust score (1–100).
     pub reputation_score: u32,
+    /// Branded trust label (e.g. Verified, Guardian).
     pub tier: String,
-    pub celestila_tier: String,
+    pub trust_label: String,
     pub balance: Balance,
     pub tx_stats: TxStats,
     pub wallet_age: WalletAge,
@@ -82,7 +87,6 @@ pub struct TokenRiskDto {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReputationResponse {
     pub address: String,
     #[serde(flatten)]
@@ -91,5 +95,6 @@ pub struct ReputationResponse {
     pub improvement_steps: Vec<crate::analysis::improvements::ImprovementStep>,
     pub token_risks: Vec<TokenRiskDto>,
     pub integrations: serde_json::Value,
+    pub funding_source: FundingSource,
     pub api_version: String,
 }

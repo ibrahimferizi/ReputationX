@@ -17,14 +17,21 @@ pub struct MetricAssessment {
     pub summary: String,
 }
 
-pub fn assess_wallet_age(days: f64, history_capped: bool) -> MetricAssessment {
-    let capped_note = if history_capped {
-        " (based on scanned history; paginate further for exact genesis)"
+pub fn assess_wallet_age(days: f64, age_capped: bool, unknown: bool) -> MetricAssessment {
+    let capped_note = if unknown {
+        " (first activity time unavailable from RPC)"
+    } else if age_capped {
+        " (age lower bound — raise MAX_SIGNATURE_PAGES or use SCAN_MODE=deep with a dedicated history RPC)"
     } else {
         ""
     };
 
-    let (risk, summary) = if days < 7.0 {
+    let (risk, summary) = if unknown {
+        (
+            RiskLevel::Medium,
+            format!("Could not determine wallet age from on-chain data.{capped_note}"),
+        )
+    } else if days < 7.0 {
         (
             RiskLevel::High,
             format!("Wallet is very new; limited on-chain history.{capped_note}"),
@@ -44,9 +51,49 @@ pub fn assess_wallet_age(days: f64, history_capped: bool) -> MetricAssessment {
     MetricAssessment {
         id: "wallet_age".into(),
         label: "Wallet Age".into(),
-        value: format!("{:.1} days", days),
+        value: crate::solana::transactions::format_wallet_age(days),
         risk,
         summary,
+    }
+}
+
+/// WalletGuard trust rating: maps internal raw score (0–1400) to public 1–100 + branded label.
+pub struct TrustRating {
+    pub score: u32,
+    pub label: String,
+}
+
+pub fn raw_to_trust_rating(raw: u32) -> TrustRating {
+    let raw = raw.min(1400);
+    let score = 1 + (raw as u64 * 99 / 1400) as u32;
+    let label = match score {
+        1..=20 => "Unverified",
+        21..=40 => "Caution",
+        41..=60 => "Fair",
+        61..=80 => "Trusted",
+        81..=94 => "Strong",
+        _ => "Guardian",
+    }
+    .to_string();
+    TrustRating { score, label }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::raw_to_trust_rating;
+
+    #[test]
+    fn trust_score_is_1_to_100() {
+        assert_eq!(raw_to_trust_rating(0).score, 1);
+        assert_eq!(raw_to_trust_rating(1400).score, 100);
+        assert_eq!(raw_to_trust_rating(700).score, 51);
+    }
+
+    #[test]
+    fn no_planet_tiers() {
+        let label = raw_to_trust_rating(1200).label;
+        assert!(!label.contains("Mercury"));
+        assert!(!label.contains("Sun"));
     }
 }
 
@@ -265,22 +312,6 @@ pub fn assess_defi(interactions: usize) -> MetricAssessment {
         risk,
         summary,
     }
-}
-
-pub fn score_to_tier(score: u32) -> (u32, String) {
-    let score = score.min(1400);
-    let tier = match score {
-        0..=119 => "Mercury",
-        120..=279 => "Venus",
-        280..=449 => "Earth",
-        450..=649 => "Mars",
-        650..=849 => "Jupiter",
-        850..=1049 => "Saturn",
-        1050..=1199 => "Uranus",
-        1200..=1319 => "Neptune",
-        _ => "Sun",
-    };
-    (score, tier.to_string())
 }
 
 pub fn compute_reputation_score(
