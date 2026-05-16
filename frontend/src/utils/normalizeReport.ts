@@ -7,10 +7,26 @@ function normalizeRisk(risk: unknown): RiskLevel {
   return "medium";
 }
 
+function pick<T>(raw: Record<string, unknown>, snake: string, camel: string): T | undefined {
+  if (raw[snake] !== undefined) return raw[snake] as T;
+  if (raw[camel] !== undefined) return raw[camel] as T;
+  return undefined;
+}
+
+function pickObject(
+  raw: Record<string, unknown>,
+  snake: string,
+  camel: string
+): Record<string, unknown> | undefined {
+  const v = pick<Record<string, unknown>>(raw, snake, camel);
+  return v && typeof v === "object" ? v : undefined;
+}
+
 /** Ensure API payload has arrays/objects the UI expects (avoids render crashes). */
 export function normalizeReport(raw: Record<string, unknown>): ReputationReport {
-  const metrics = Array.isArray(raw.metrics)
-    ? (raw.metrics as WalletMetric[]).map((m) => ({
+  const metricsRaw = pick<unknown[]>(raw, "metrics", "metrics");
+  const metrics = Array.isArray(metricsRaw)
+    ? (metricsRaw as WalletMetric[]).map((m) => ({
         id: String(m.id ?? ""),
         label: String(m.label ?? ""),
         value: String(m.value ?? ""),
@@ -19,57 +35,56 @@ export function normalizeReport(raw: Record<string, unknown>): ReputationReport 
       }))
     : [];
 
-  const improvement_steps = Array.isArray(raw.improvement_steps)
-    ? raw.improvement_steps
-    : [];
+  const improvementRaw = pick<unknown[]>(raw, "improvement_steps", "improvementSteps");
+  const improvement_steps = Array.isArray(improvementRaw) ? improvementRaw : [];
 
-  const token_risks = Array.isArray(raw.token_risks) ? raw.token_risks : [];
+  const tokenRisksRaw = pick<unknown[]>(raw, "token_risks", "tokenRisks");
+  const token_risks = Array.isArray(tokenRisksRaw) ? tokenRisksRaw : [];
 
-  const balance =
-    raw.balance && typeof raw.balance === "object"
-      ? (raw.balance as { sol?: number })
-      : { sol: 0 };
+  const balanceObj = pickObject(raw, "balance", "balance") ?? {};
+  const txStatsObj = pickObject(raw, "tx_stats", "txStats") ?? {};
+  const walletAgeObj = pickObject(raw, "wallet_age", "walletAge") ?? {};
+  const nftStatsObj = pickObject(raw, "nft_stats", "nftStats") ?? {};
+  const defiObj = pickObject(raw, "defi_exposure", "defiExposure") ?? {};
 
-  const tx_stats =
-    raw.tx_stats && typeof raw.tx_stats === "object"
-      ? (raw.tx_stats as ReputationReport["tx_stats"])
-      : { count: 0, capped: false };
+  const trustLabel = String(
+    pick<string>(raw, "trust_label", "trustLabel") ??
+      pick<string>(raw, "tier", "tier") ??
+      "Unverified"
+  );
 
-  const wallet_age =
-    raw.wallet_age && typeof raw.wallet_age === "object"
-      ? (raw.wallet_age as ReputationReport["wallet_age"])
-      : { days: 0 };
-
-  const nft_stats =
-    raw.nft_stats && typeof raw.nft_stats === "object"
-      ? (raw.nft_stats as { count?: number })
-      : { count: 0 };
-
-  const defi_exposure =
-    raw.defi_exposure && typeof raw.defi_exposure === "object"
-      ? (raw.defi_exposure as ReputationReport["defi_exposure"])
-      : { total_usd: 0 };
+  const reputationScore = Number(
+    pick<number>(raw, "reputation_score", "reputationScore") ?? 0
+  );
 
   return {
     address: String(raw.address ?? ""),
-    reputation_score: Number(raw.reputation_score ?? 0),
-    tier: String(raw.tier ?? "Mercury"),
-    celestila_tier: String(raw.celestila_tier ?? raw.tier ?? "Mercury"),
-    balance: { sol: Number(balance.sol ?? 0) },
+    reputation_score: reputationScore,
+    tier: trustLabel,
+    trust_label: trustLabel,
+    balance: { sol: Number(balanceObj.sol ?? 0) },
     tx_stats: {
-      count: Number(tx_stats.count ?? 0),
-      capped: Boolean(tx_stats.capped),
-      max_per_hour: tx_stats.max_per_hour,
+      count: Number(txStatsObj.count ?? 0),
+      capped: Boolean(txStatsObj.capped),
+      max_per_hour: txStatsObj.max_per_hour ?? txStatsObj.maxPerHour,
     },
     wallet_age: {
-      days: Number(wallet_age.days ?? 0),
-      days_precise: wallet_age.days_precise,
-      first_activity_unix: wallet_age.first_activity_unix ?? null,
+      days: Number(walletAgeObj.days ?? 0),
+      days_precise:
+        walletAgeObj.days_precise ?? walletAgeObj.daysPrecise,
+      first_activity_unix:
+        walletAgeObj.first_activity_unix ??
+        walletAgeObj.firstActivityUnix ??
+        null,
+      age_capped: Boolean(
+        walletAgeObj.age_capped ?? walletAgeObj.ageCapped ?? false
+      ),
     },
-    nft_stats: { count: Number(nft_stats.count ?? 0) },
+    nft_stats: { count: Number(nftStatsObj.count ?? 0) },
     defi_exposure: {
-      total_usd: Number(defi_exposure.total_usd ?? 0),
-      interaction_count: defi_exposure.interaction_count,
+      total_usd: Number(defiObj.total_usd ?? defiObj.totalUsd ?? 0),
+      interaction_count:
+        defiObj.interaction_count ?? defiObj.interactionCount,
     },
     metrics,
     improvement_steps,
@@ -78,6 +93,10 @@ export function normalizeReport(raw: Record<string, unknown>): ReputationReport 
       raw.integrations && typeof raw.integrations === "object"
         ? (raw.integrations as Record<string, unknown>)
         : undefined,
-    api_version: raw.api_version ? String(raw.api_version) : undefined,
+    api_version: raw.api_version
+      ? String(raw.api_version)
+      : raw.apiVersion
+        ? String(raw.apiVersion)
+        : undefined,
   };
 }

@@ -188,12 +188,19 @@ body,
 }
 
 .score {
-  display: block;
+  display: inline;
   font-size: 2rem;
   font-weight: 700;
 }
 
+.score-suffix {
+  font-size: 1rem;
+  color: #8b949e;
+  margin-left: 0.15rem;
+}
+
 .tier {
+  display: block;
   color: #6cb6ff;
   font-weight: 600;
 }

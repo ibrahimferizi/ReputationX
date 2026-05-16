@@ -1,14 +1,19 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { MetricRow } from "./components/MetricRow";
+import { SybilScanner } from "./components/SybilScanner";
 import { useWalletHistory } from "./hooks/useWalletHistory";
 import type { ImprovementStep, ReputationReport } from "./types/api";
 import { normalizeReport } from "./utils/normalizeReport";
 import "./App.css";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+/** Empty = same-origin; Vite proxies /api → backend in dev. Set VITE_API_URL to override. */
+const API_BASE = import.meta.env.VITE_API_URL || "";
+
+type AppTab = "check" | "sybil";
 
 function App() {
+  const [activeTab, setActiveTab] = useState<AppTab>("check");
   const [walletAddress, setWalletAddress] = useState("");
   const [report, setReport] = useState<ReputationReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,7 +56,7 @@ function App() {
       setWalletAddress(address);
       addEntry({
         address,
-        tier: data.celestila_tier || data.tier,
+        tier: data.trust_label || data.tier,
         score: data.reputation_score,
       });
     } catch (err: unknown) {
@@ -68,15 +73,43 @@ function App() {
     }
   };
 
-  const tier = report?.celestila_tier || report?.tier || "";
+  const trustLabel = report?.trust_label || report?.tier || "";
 
   return (
     <div className="app">
       <header className="header">
         <h1>Wallet Guard</h1>
-        <p>Solana wallet forensic preview — on-chain reputation API</p>
+        <p>Solana wallet trust score (1–100) — WalletGuard reputation API</p>
       </header>
 
+      <nav
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: "0.5rem",
+          marginBottom: "1.5rem",
+        }}
+        aria-label="Main"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab("check")}
+          style={tabButtonStyle(activeTab === "check")}
+        >
+          Wallet Check
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("sybil")}
+          style={tabButtonStyle(activeTab === "sybil")}
+        >
+          Sybil Scan
+        </button>
+      </nav>
+
+      {activeTab === "sybil" ? (
+        <SybilScanner />
+      ) : (
       <div className="layout">
         <aside className="sidebar">
           <h3>Recent checks</h3>
@@ -143,15 +176,25 @@ function App() {
                 </div>
                 <div className="score-block">
                   <span className="score">{report.reputation_score}</span>
-                  <span className="tier">{tier}</span>
+                  <span className="score-suffix">/100</span>
+                  <span className="tier">{trustLabel}</span>
                 </div>
               </div>
 
-              {report.tx_stats?.capped && (
+              {report.wallet_age?.age_capped && (
                 <p className="warn-banner">
-                  Transaction history scan hit the server page limit. Use a dedicated RPC and
-                  raise MAX_SIGNATURE_PAGES for full counts and exact wallet age on hyper-active
-                  wallets.
+                  Wallet age may be too low. Set <code>HELIUS_API_KEY</code> in{" "}
+                  <code>backend/.env</code> (enables one-call oldest tx), or raise{" "}
+                  <code>MAX_AGE_SIGNATURE_PAGES</code>. age_source=
+                  {String(report.integrations?.age_source ?? "?")}, scan_mode=
+                  {String(report.integrations?.scan_mode ?? "?")} (tx scan only), max_age_pages=
+                  {String(report.integrations?.max_age_signature_pages ?? "?")}.
+                </p>
+              )}
+              {report.tx_stats?.capped && !report.wallet_age?.age_capped && (
+                <p className="warn-banner">
+                  Transaction count is a lower bound (scan stopped at the page limit). Raise{" "}
+                  <code>MAX_SIGNATURE_PAGES</code> in <code>backend/.env</code> and restart the API.
                 </p>
               )}
 
@@ -188,8 +231,21 @@ function App() {
           )}
         </main>
       </div>
+      )}
     </div>
   );
+}
+
+function tabButtonStyle(active: boolean): CSSProperties {
+  return {
+    padding: "0.55rem 1.25rem",
+    borderRadius: 8,
+    border: active ? "1px solid #4a9eff" : "1px solid #333a45",
+    background: active ? "#2563eb" : "#1a1d24",
+    color: "#fff",
+    fontWeight: 600,
+    cursor: "pointer",
+  };
 }
 
 function shorten(addr: string, chars = 6) {

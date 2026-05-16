@@ -26,13 +26,14 @@ export interface ReputationReport {
   address: string;
   reputation_score: number;
   tier: string;
-  celestila_tier: string;
+  trust_label: string;
   balance: { sol: number };
   tx_stats: { count: number; capped?: boolean; max_per_hour?: number };
   wallet_age: {
     days: number;
     days_precise?: number;
     first_activity_unix?: number | null;
+    age_capped?: boolean;
   };
   nft_stats: { count: number };
   defi_exposure: { total_usd: number; interaction_count?: number };
@@ -48,4 +49,21 @@ export interface HistoryEntry {
   tier: string;
   score: number;
   checkedAt: string;
+}
+
+export type ClusterSuspicion = "low" | "medium" | "high";
+
+export interface WalletCluster {
+  cluster_id: string;
+  funding_address: string;
+  members: string[];
+  suspicion: ClusterSuspicion;
+  reasons: string[];
+}
+
+export interface SybilScanResponse {
+  wallets: ReputationReport[];
+  clusters: WalletCluster[];
+  total_scanned: number;
+  flagged: number;
 }
