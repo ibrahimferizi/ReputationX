@@ -5,6 +5,12 @@ import { SybilScanner } from "./components/SybilScanner";
 import { useWalletHistory } from "./hooks/useWalletHistory";
 import type { ImprovementStep, ReputationReport } from "./types/api";
 import { normalizeReport } from "./utils/normalizeReport";
+import {
+  getCachedWallet,
+  setCachedWallet,
+  formatCacheTimestamp,
+  getCacheTimestamp,
+} from "./utils/cache";
 import "./App.css";
 
 /** Empty = same-origin; Vite proxies /api → backend in dev. Set VITE_API_URL to override. */
@@ -18,6 +24,7 @@ function App() {
   const [report, setReport] = useState<ReputationReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fromCache, setFromCache] = useState(false);
   const { history, addEntry, clearHistory } = useWalletHistory();
 
   const improvementByMetric = useMemo(() => {
@@ -26,10 +33,28 @@ function App() {
     return map;
   }, [report]);
 
-  const checkRisk = async (addressOverride?: string) => {
+  const checkRisk = async (addressOverride?: string, skipCache = false) => {
     const address = (addressOverride ?? walletAddress).trim();
     setError(null);
     setLoading(true);
+    setFromCache(false);
+
+    // Check cache first (unless force refresh)
+    if (!skipCache) {
+      const cached = getCachedWallet(address);
+      if (cached) {
+        setReport(cached);
+        setWalletAddress(address);
+        setFromCache(true);
+        setLoading(false);
+        addEntry({
+          address,
+          tier: cached.trust_label || cached.tier,
+          score: cached.reputation_score,
+        });
+        return;
+      }
+    }
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
@@ -54,6 +79,8 @@ function App() {
       const data = normalizeReport(raw as Record<string, unknown>);
       setReport(data);
       setWalletAddress(address);
+      setFromCache(false);
+      setCachedWallet(data);
       addEntry({
         address,
         tier: data.trust_label || data.tier,
@@ -156,19 +183,74 @@ function App() {
             }}
           />
 
-          <button
-            type="button"
-            className="primary-btn"
-            onClick={() => checkRisk()}
-            disabled={loading || !walletAddress.trim()}
-          >
-            {loading ? "Analyzing (usually 3–8s)…" : "Check wallet"}
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={() => checkRisk()}
+              disabled={loading || !walletAddress.trim()}
+            >
+              {loading ? "Analyzing (usually 3–8s)…" : "Check wallet"}
+            </button>
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => checkRisk(undefined, true)}
+              disabled={loading || !walletAddress.trim()}
+              style={{
+                padding: "0.75rem 1.5rem",
+                borderRadius: 8,
+                border: "1px solid #333a45",
+                background: "#1a1d24",
+                color: "#fff",
+                cursor: loading || !walletAddress.trim() ? "not-allowed" : "pointer",
+                opacity: loading || !walletAddress.trim() ? 0.5 : 1,
+              }}
+            >
+              {loading ? "Refreshing…" : "Force Refresh"}
+            </button>
+          </div>
 
           {error && <div className="error-banner">{error}</div>}
 
           {report && (
             <section className="report">
+              {fromCache && (
+                <div
+                  style={{
+                    margin: "0 0 1.25rem",
+                    padding: "0.75rem 1rem",
+                    background: "#1a2e1a",
+                    borderRadius: 8,
+                    border: "1px solid #2d4a2d",
+                    fontWeight: 600,
+                    color: "#a5d6a7",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <span>
+                    Results loaded from cache ·{" "}
+                    {getCacheTimestamp(report.address) && formatCacheTimestamp(getCacheTimestamp(report.address)!)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => checkRisk(undefined, true)}
+                    style={{
+                      padding: "0.4rem 0.8rem",
+                      borderRadius: 4,
+                      border: "1px solid #4a7c4a",
+                      background: "#2d4a2d",
+                      color: "#a5d6a7",
+                      cursor: "pointer",
+                      fontSize: "0.85rem",
+                    }}
+                  >
+                    Update
+                  </button>
+                </div>
+              )}
               <div className="report-header">
                 <div>
                   <h2>Reputation report</h2>

@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { ClusterGraph } from "./ClusterGraph";
 import type { ClusterSuspicion, ReputationReport, SybilScanResponse } from "../types/api";
+import {
+  getCachedScan,
+  setCachedScan,
+  formatCacheTimestamp,
+  getCacheTimestamp,
+} from "../utils/cache";
 
 /** Empty = same-origin; Vite proxies /api → backend in dev. Set VITE_API_URL to override. */
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -20,8 +26,9 @@ export function SybilScanner() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SybilScanResponse | null>(null);
+  const [fromCache, setFromCache] = useState(false);
 
-  const runScan = async () => {
+  const runScan = async (skipCache = false) => {
     const addresses = input
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -39,6 +46,41 @@ export function SybilScanner() {
     setError(null);
     setLoading(true);
     setResult(null);
+    setFromCache(false);
+
+    // Check cache first (unless force refresh)
+    if (!skipCache) {
+      const { cached, uncached } = getCachedScan(addresses);
+
+      if (cached.size > 0 && uncached.length === 0) {
+        // All wallets are cached
+        const cachedWallets = Array.from(cached.values());
+        const cachedResult: SybilScanResponse = {
+          wallets: cachedWallets,
+          clusters: [],
+          total_scanned: cachedWallets.length,
+          flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
+        };
+        setResult(cachedResult);
+        setFromCache(true);
+        setLoading(false);
+        return;
+      }
+
+      if (cached.size > 0) {
+        // Partial cache hit - show cached results and fetch uncached
+        const cachedWallets = Array.from(cached.values());
+        const partialResult: SybilScanResponse = {
+          wallets: cachedWallets,
+          clusters: [],
+          total_scanned: cachedWallets.length,
+          flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
+        };
+        setResult(partialResult);
+        setFromCache(true);
+        // Continue to fetch uncached wallets
+      }
+    }
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 180_000);
@@ -62,6 +104,8 @@ export function SybilScanner() {
 
       const data = (await response.json()) as SybilScanResponse;
       setResult(data);
+      setFromCache(false);
+      setCachedScan(data);
     } catch (err: unknown) {
       let message = err instanceof Error ? err.message : "Sybil scan failed";
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -142,14 +186,33 @@ export function SybilScanner() {
         {addressCount} address{addressCount === 1 ? "" : "es"} · max {MAX_ADDRESSES}
       </p>
 
-      <button
-        type="button"
-        className="primary-btn"
-        onClick={runScan}
-        disabled={loading || addressCount === 0}
-      >
-        {loading ? "Scanning wallets…" : "Scan"}
-      </button>
+      <div style={{ display: "flex", gap: "0.5rem" }}>
+        <button
+          type="button"
+          className="primary-btn"
+          onClick={() => runScan(false)}
+          disabled={loading || addressCount === 0}
+        >
+          {loading ? "Scanning wallets…" : "Scan"}
+        </button>
+        <button
+          type="button"
+          className="secondary-btn"
+          onClick={() => runScan(true)}
+          disabled={loading || addressCount === 0}
+          style={{
+            padding: "0.75rem 1.5rem",
+            borderRadius: 8,
+            border: "1px solid #333a45",
+            background: "#1a1d24",
+            color: "#fff",
+            cursor: loading || addressCount === 0 ? "not-allowed" : "pointer",
+            opacity: loading || addressCount === 0 ? 0.5 : 1,
+          }}
+        >
+          {loading ? "Refreshing…" : "Force Refresh"}
+        </button>
+      </div>
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -161,6 +224,39 @@ export function SybilScanner() {
 
       {result && !loading && (
         <section className="report" style={{ marginTop: "2rem" }}>
+          {fromCache && (
+            <div
+              style={{
+                margin: "0 0 1.25rem",
+                padding: "0.75rem 1rem",
+                background: "#1a2e1a",
+                borderRadius: 8,
+                border: "1px solid #2d4a2d",
+                fontWeight: 600,
+                color: "#a5d6a7",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span>Results loaded from cache</span>
+              <button
+                type="button"
+                onClick={() => runScan(true)}
+                style={{
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid #4a7c4a",
+                  background: "#2d4a2d",
+                  color: "#a5d6a7",
+                  cursor: "pointer",
+                  fontSize: "0.85rem",
+                }}
+              >
+                Update
+              </button>
+            </div>
+          )}
           <p
             style={{
               margin: "0 0 1.25rem",
@@ -261,6 +357,7 @@ function WalletResultRow({
 }) {
   const funder = wallet.funding_source;
   const highMetrics = wallet.metrics.filter((m) => m.risk === "high");
+  const cacheTimestamp = getCacheTimestamp(wallet.address);
 
   return (
     <div
@@ -282,6 +379,11 @@ function WalletResultRow({
           <span style={{ fontSize: "0.72rem", color: "#fca5a5" }}>shared funder cluster</span>
         )}
         {!inCluster && <span style={{ fontSize: "0.72rem", color: "#fdba74" }}>elevated risk</span>}
+        {cacheTimestamp && (
+          <span style={{ fontSize: "0.72rem", color: "#639922" }}>
+            cached · {formatCacheTimestamp(cacheTimestamp)}
+          </span>
+        )}
       </div>
       <p className="metric-row-summary" style={{ margin: "0.35rem 0 0" }}>
         Funder:{" "}
