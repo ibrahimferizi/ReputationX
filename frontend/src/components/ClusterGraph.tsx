@@ -14,18 +14,28 @@ const SUSPICION_COLORS: Record<ClusterSuspicion, string> = {
   low: "#639922",
 };
 
-const FUNDER_RADIUS = 20;
-const MEMBER_RADIUS = 11;
+function getScoreColor(score: number): string {
+  if (score <= 20) return "#E24B4A"; // Red - very high risk
+  if (score <= 40) return "#EF9F27"; // Orange - high risk
+  if (score <= 60) return "#F5C542"; // Yellow - medium risk
+  if (score <= 80) return "#639922"; // Green - low risk
+  return "#4CAF50"; // Light green - good
+}
+
+const FUNDER_RADIUS = 14;
+const MEMBER_RADIUS = 8;
 const CLEAN_RADIUS = 9;
+const ELEVATED_RADIUS = 11;
 const MEMBER_COLOR = "#7F77DD";
 const CLEAN_COLOR = "#888780";
 
 export interface ClusterGraphProps {
   clusters: WalletCluster[];
   cleanWallets: string[];
+  elevatedRiskWallets: Array<{ address: string; reputation_score: number; trust_label: string }>;
 }
 
-type NodeKind = "funder" | "member" | "clean";
+type NodeKind = "funder" | "member" | "clean" | "elevated";
 
 interface SimNode {
   id: string;
@@ -55,7 +65,7 @@ interface TooltipState {
   node: SimNode;
 }
 
-export function ClusterGraph({ clusters, cleanWallets }: ClusterGraphProps) {
+export function ClusterGraph({ clusters, cleanWallets, elevatedRiskWallets }: ClusterGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<{ nodes: SimNode[]; edges: SimEdge[]; width: number } | null>(
@@ -79,8 +89,9 @@ export function ClusterGraph({ clusters, cleanWallets }: ClusterGraphProps) {
           suspicion: c.suspicion,
         })),
         clean: cleanWallets,
+        elevated: elevatedRiskWallets.map((w) => w.address),
       }),
-    [clusters, cleanWallets],
+    [clusters, cleanWallets, elevatedRiskWallets],
   );
 
   const buildSimulation = useCallback(
@@ -109,7 +120,7 @@ export function ClusterGraph({ clusters, cleanWallets }: ClusterGraphProps) {
           vy: 0,
           radius: FUNDER_RADIUS,
           color: suspicionColor,
-          opacity: 1,
+          opacity: 0.6,
           label: truncateAddress(cluster.funding_address),
           address: cluster.funding_address,
           cluster,
@@ -131,7 +142,7 @@ export function ClusterGraph({ clusters, cleanWallets }: ClusterGraphProps) {
             vy: 0,
             radius: MEMBER_RADIUS,
             color: MEMBER_COLOR,
-            opacity: 1,
+            opacity: 0.5,
             label: truncateAddress(member),
             address: member,
             cluster,
@@ -164,9 +175,28 @@ export function ClusterGraph({ clusters, cleanWallets }: ClusterGraphProps) {
         });
       });
 
+      const elevatedCount = elevatedRiskWallets.length;
+      elevatedRiskWallets.forEach((wallet, index) => {
+        const { x, y } = elevatedWalletPosition(index, elevatedCount, canvasWidth, HEIGHT);
+        nodes.push({
+          id: `elevated-${wallet.address}`,
+          kind: "elevated",
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          radius: ELEVATED_RADIUS,
+          color: getScoreColor(wallet.reputation_score),
+          opacity: 0.95,
+          label: truncateAddress(wallet.address),
+          address: wallet.address,
+          pinned: false,
+        });
+      });
+
       return { nodes, edges };
     },
-    [clusters, cleanWallets],
+    [clusters, cleanWallets, elevatedRiskWallets],
   );
 
   useEffect(() => {
@@ -531,6 +561,17 @@ function TooltipContent({ node }: { node: SimNode }) {
     );
   }
 
+  if (node.kind === "elevated") {
+    return (
+      <>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Elevated risk wallet</div>
+        <div style={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+          {node.address}
+        </div>
+      </>
+    );
+  }
+
   const cluster = node.cluster;
   if (!cluster) return null;
 
@@ -563,10 +604,12 @@ function TooltipContent({ node }: { node: SimNode }) {
 }
 
 const LEGEND_ITEMS = [
-  { color: SUSPICION_COLORS.high, dot: 8, label: "High suspicion funder" },
-  { color: SUSPICION_COLORS.medium, dot: 8, label: "Medium suspicion funder" },
-  { color: SUSPICION_COLORS.low, dot: 8, label: "Low suspicion funder" },
-  { color: MEMBER_COLOR, dot: 7, label: "Cluster member wallet" },
+  { color: "#E24B4A", dot: 7, label: "Score 0-20 (Very High Risk)", opacity: 0.95 },
+  { color: "#EF9F27", dot: 7, label: "Score 21-40 (High Risk)", opacity: 0.95 },
+  { color: "#F5C542", dot: 7, label: "Score 41-60 (Medium Risk)", opacity: 0.95 },
+  { color: "#639922", dot: 7, label: "Score 61-80 (Low Risk)", opacity: 0.95 },
+  { color: "#4CAF50", dot: 7, label: "Score 81-100 (Good)", opacity: 0.95 },
+  { color: MEMBER_COLOR, dot: 6, label: "Cluster member", opacity: 0.5 },
   { color: CLEAN_COLOR, dot: 6, label: "Clean wallet", opacity: 0.7 },
 ] as const;
 
@@ -603,6 +646,24 @@ function cleanWalletPosition(
   height: number,
 ): { x: number; y: number } {
   const x = width * 0.82;
+  const padding = 48;
+
+  if (total <= 1) {
+    return { x, y: height / 2 };
+  }
+
+  const usable = height - padding * 2;
+  const y = padding + (usable * index) / (total - 1);
+  return { x, y };
+}
+
+function elevatedWalletPosition(
+  index: number,
+  total: number,
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  const x = width * 0.55;
   const padding = 48;
 
   if (total <= 1) {

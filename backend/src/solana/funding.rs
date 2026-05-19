@@ -93,16 +93,23 @@ async fn trace_funding_source(
     config: &Config,
 ) -> Result<FundingSource> {
     // Prefer Helius oldest-tx lookup (1 RPC) over paging getSignaturesForAddress.
-    if let Ok(Some(signature)) = helius::try_gtfa_oldest_signature(config, rpc, address).await {
-        if let Some(source) = funding_from_signature(rpc, address, &signature).await? {
-            return Ok(source);
+    if let Ok(signatures) = helius::try_gtfa_oldest_signatures(config, rpc, address).await {
+        for signature in signatures {
+            if let Some(source) = funding_from_signature(rpc, address, &signature).await? {
+                return Ok(source);
+            }
         }
     }
 
-    let oldest_batch =
-        fetch_oldest_signature_batch(rpc, address, config.funding_max_signature_pages, config.funding_page_delay_ms)
-            .await?;
+    let oldest_batch = fetch_oldest_signature_batch(
+        rpc,
+        address,
+        config.funding_max_signature_pages,
+        config.funding_page_delay_ms,
+    )
+    .await?;
     let Some(oldest_batch) = oldest_batch else {
+        tracing::warn!(%address, "funding trace: no signatures found");
         return Ok(FundingSource::unknown());
     };
 
@@ -113,6 +120,7 @@ async fn trace_funding_source(
         .filter(|row| row.err.is_none())
         .take(MAX_OLDEST_TX_ATTEMPTS)
         .collect();
+    let candidate_count = candidates.len();
 
     for row in candidates {
         if let Some(source) = funding_from_signature(rpc, address, &row.signature).await? {
@@ -120,6 +128,11 @@ async fn trace_funding_source(
         }
     }
 
+    tracing::warn!(
+        %address,
+        candidates = candidate_count,
+        "funding trace: could not resolve funder from oldest transactions"
+    );
     Ok(FundingSource::unknown())
 }
 
@@ -132,7 +145,9 @@ async fn funding_from_signature(
     let Some(tx) = tx else {
         return Ok(None);
     };
-    Ok(extract_first_sol_inflow_sender(&tx, address).map(|sender| classify_funding(&sender, &tx)))
+    let sender = extract_first_sol_inflow_sender(&tx, address)
+        .or_else(|| extract_funding_from_balance_changes(&tx, address));
+    Ok(sender.map(|s| classify_funding(&s, &tx)))
 }
 
 /// Walk `getSignaturesForAddress` pages until genesis; return the final (oldest) page.
@@ -259,11 +274,120 @@ fn inflow_source_from_instruction(ix: &Value, destination: &str) -> Option<Strin
         "transfer" if info.get("destination").and_then(|d| d.as_str()) == Some(destination) => {
             info.get("source").and_then(|s| s.as_str()).map(str::to_string)
         }
+        "transferWithSeed"
+            if info.get("toPubkey").and_then(|d| d.as_str()) == Some(destination) =>
+        {
+            info.get("fromPubkey")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        }
         "createAccount" if info.get("newAccount").and_then(|d| d.as_str()) == Some(destination) => {
+            info.get("source").and_then(|s| s.as_str()).map(str::to_string)
+        }
+        "createAccountWithSeed"
+            if info.get("newAccount").and_then(|d| d.as_str()) == Some(destination) =>
+        {
             info.get("source").and_then(|s| s.as_str()).map(str::to_string)
         }
         _ => None,
     }
+}
+
+/// Fallback when parsed instructions omit the funder (common on v0 txs and inner transfers).
+fn extract_funding_from_balance_changes(tx: &Value, destination: &str) -> Option<String> {
+    let meta = tx.get("meta")?;
+    let pre = meta.get("preBalances")?.as_array()?;
+    let post = meta.get("postBalances")?.as_array()?;
+    if pre.len() != post.len() || pre.is_empty() {
+        return None;
+    }
+
+    let message = tx.get("transaction")?.get("message")?;
+    let keys = resolve_account_keys(message, meta);
+    if keys.len() != pre.len() {
+        return None;
+    }
+
+    let dest_idx = keys.iter().position(|k| k == destination)?;
+    let pre_amt = pre[dest_idx].as_u64()?;
+    let post_amt = post[dest_idx].as_u64()?;
+    if post_amt <= pre_amt {
+        return None;
+    }
+    let gained = post_amt - pre_amt;
+    if gained < 5_000 {
+        return None;
+    }
+
+    let mut best_sender: Option<(u64, usize)> = None;
+    for (i, (pre_b, post_b)) in pre.iter().zip(post.iter()).enumerate() {
+        if i == dest_idx {
+            continue;
+        }
+        let pre_v = pre_b.as_u64()?;
+        let post_v = post_b.as_u64()?;
+        if pre_v > post_v {
+            let loss = pre_v - post_v;
+            match best_sender {
+                Some((best_loss, _)) if loss <= best_loss => {}
+                _ => best_sender = Some((loss, i)),
+            }
+        }
+    }
+
+    let (loss, idx) = best_sender?;
+    if loss < gained / 2 {
+        return None;
+    }
+
+    let sender = keys.get(idx)?.as_str();
+    if is_non_funder_account(sender) {
+        return None;
+    }
+    Some(sender.to_string())
+}
+
+fn resolve_account_keys(message: &Value, meta: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(arr) = message.get("accountKeys").and_then(|v| v.as_array()) {
+        for entry in arr {
+            if let Some(s) = entry.as_str() {
+                keys.push(s.to_string());
+            } else if let Some(pk) = entry.get("pubkey").and_then(|v| v.as_str()) {
+                keys.push(pk.to_string());
+            }
+        }
+    }
+    if let Some(loaded) = meta.get("loadedAddresses") {
+        if let Some(writable) = loaded.get("writable").and_then(|v| v.as_array()) {
+            for key in writable {
+                if let Some(s) = key.as_str() {
+                    keys.push(s.to_string());
+                }
+            }
+        }
+        if let Some(readonly) = loaded.get("readonly").and_then(|v| v.as_array()) {
+            for key in readonly {
+                if let Some(s) = key.as_str() {
+                    keys.push(s.to_string());
+                }
+            }
+        }
+    }
+    keys
+}
+
+fn is_non_funder_account(addr: &str) -> bool {
+    matches!(
+        addr,
+        "11111111111111111111111111111111"
+            | "Stake11111111111111111111111111111111111111"
+            | "Vote111111111111111111111111111111111111111"
+            | "ComputeBudget111111111111111111111111111111"
+            | "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+            | "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            | "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    )
 }
 
 fn classify_funding(sender: &str, tx: &Value) -> FundingSource {
@@ -359,6 +483,32 @@ mod tests {
         });
         let src = classify_funding("SomeWallet1111111111111111111111111111111", &tx);
         assert_eq!(src.source_type, "bridge");
+    }
+
+    #[test]
+    fn extracts_funding_from_balance_changes() {
+        let tx = json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        "Funder1111111111111111111111111111111111111",
+                        "Target1111111111111111111111111111111111"
+                    ]
+                }
+            },
+            "meta": {
+                "preBalances": [2_000_000_000, 0],
+                "postBalances": [1_000_000_000, 1_000_000_000]
+            }
+        });
+        let sender = extract_funding_from_balance_changes(
+            &tx,
+            "Target1111111111111111111111111111111111",
+        );
+        assert_eq!(
+            sender.as_deref(),
+            Some("Funder1111111111111111111111111111111111111")
+        );
     }
 
     #[test]

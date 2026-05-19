@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ClusterGraph } from "./ClusterGraph";
-import type { ClusterSuspicion, SybilScanResponse } from "../types/api";
+import type { ClusterSuspicion, ReputationReport, SybilScanResponse } from "../types/api";
 
 /** Empty = same-origin; Vite proxies /api → backend in dev. Set VITE_API_URL to override. */
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -82,8 +82,26 @@ export function SybilScanner() {
     result?.clusters.forEach((cluster) => {
       cluster.members.forEach((addr) => set.add(addr));
     });
+    result?.wallets.forEach((wallet) => {
+      if (walletHasElevatedRisk(wallet)) {
+        set.add(wallet.address);
+      }
+    });
     return set;
   }, [result]);
+
+  const clusterFlaggedSet = useMemo(() => {
+    const set = new Set<string>();
+    result?.clusters.forEach((cluster) => {
+      cluster.members.forEach((addr) => set.add(addr));
+    });
+    return set;
+  }, [result]);
+
+  const atRiskWallets = useMemo(() => {
+    if (!result) return [];
+    return result.wallets.filter((w) => flaggedSet.has(w.address));
+  }, [result, flaggedSet]);
 
   const cleanWallets = useMemo(() => {
     if (!result) return [];
@@ -153,13 +171,33 @@ export function SybilScanner() {
               fontWeight: 600,
             }}
           >
-            {result.total_scanned} wallet{result.total_scanned === 1 ? "" : "s"} scanned,{" "}
-            {result.flagged} flagged in {result.clusters.length} cluster
-            {result.clusters.length === 1 ? "" : "s"}
+            {result.total_scanned} wallet{result.total_scanned === 1 ? "" : "s"} scanned ·{" "}
+            {result.flagged} flagged ({clusterFlaggedSet.size} in{" "}
+            {result.clusters.length} cluster{result.clusters.length === 1 ? "" : "s"},{" "}
+            {atRiskWallets.filter((w) => !clusterFlaggedSet.has(w.address)).length} elevated risk)
           </p>
 
+          {atRiskWallets.length > 0 && (
+            <>
+              <h3 style={{ margin: "0 0 0.75rem" }}>Flagged wallets</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1.25rem" }}>
+                {atRiskWallets.map((wallet) => (
+                  <WalletResultRow
+                    key={wallet.address}
+                    wallet={wallet}
+                    inCluster={clusterFlaggedSet.has(wallet.address)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
           {(result.clusters.length > 0 || cleanWallets.length > 0) && (
-            <ClusterGraph clusters={result.clusters} cleanWallets={cleanWallets} />
+            <ClusterGraph 
+              clusters={result.clusters} 
+              cleanWallets={cleanWallets}
+              elevatedRiskWallets={atRiskWallets.filter((w) => !clusterFlaggedSet.has(w.address))}
+            />
           )}
 
           {result.clusters.length > 0 ? (
@@ -177,7 +215,7 @@ export function SybilScanner() {
 
           <h3 style={{ margin: "1.5rem 0 0.75rem" }}>Clean wallets</h3>
           {cleanWallets.length === 0 ? (
-            <p className="muted">No wallets outside flagged clusters.</p>
+            <p className="muted">No wallets passed without cluster or reputation flags.</p>
           ) : (
             <ul
               style={{
@@ -197,6 +235,68 @@ export function SybilScanner() {
             </ul>
           )}
         </section>
+      )}
+    </div>
+  );
+}
+
+function walletHasElevatedRisk(wallet: ReputationReport): boolean {
+  if (wallet.reputation_score <= 40) return true;
+  if (wallet.token_risks?.some((t) => t.honeypot)) return true;
+  if (wallet.metrics.some((m) => m.risk === "high")) return true;
+  const mediumSignals = wallet.metrics.filter(
+    (m) =>
+      m.risk === "medium" &&
+      ["wallet_age", "tx_burst", "tx_count", "tx_spacing", "token_risk"].includes(m.id),
+  ).length;
+  return mediumSignals >= 2;
+}
+
+function WalletResultRow({
+  wallet,
+  inCluster,
+}: {
+  wallet: ReputationReport;
+  inCluster: boolean;
+}) {
+  const funder = wallet.funding_source;
+  const highMetrics = wallet.metrics.filter((m) => m.risk === "high");
+
+  return (
+    <div
+      className="metric-row"
+      style={{
+        padding: "0.65rem 0.85rem",
+        textAlign: "left",
+        fontSize: "0.85rem",
+      }}
+    >
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+        <span className="mono" style={{ wordBreak: "break-all" }}>
+          {wallet.address}
+        </span>
+        <span style={{ fontWeight: 600 }}>
+          {wallet.trust_label} ({wallet.reputation_score}/100)
+        </span>
+        {inCluster && (
+          <span style={{ fontSize: "0.72rem", color: "#fca5a5" }}>shared funder cluster</span>
+        )}
+        {!inCluster && <span style={{ fontSize: "0.72rem", color: "#fdba74" }}>elevated risk</span>}
+      </div>
+      <p className="metric-row-summary" style={{ margin: "0.35rem 0 0" }}>
+        Funder:{" "}
+        {funder?.source_address ? (
+          <span className="mono">
+            {funder.source_type} · {funder.source_address}
+          </span>
+        ) : (
+          <span>unknown (clustering needs a resolved funding source)</span>
+        )}
+      </p>
+      {highMetrics.length > 0 && (
+        <p style={{ margin: "0.25rem 0 0", color: "#8b949e", fontSize: "0.8rem" }}>
+          High risk: {highMetrics.map((m) => m.label).join(", ")}
+        </p>
       )}
     </div>
   );

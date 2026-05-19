@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 
 use crate::analysis::cluster::{build_clusters, WalletCluster};
 use crate::analysis::reputation::build_wallet_reputation;
+use crate::analysis::risk::RiskLevel;
 use crate::error::ApiError;
 use crate::models::response::ReputationResponse;
 use crate::solana;
@@ -87,10 +88,16 @@ pub async fn post_sybil_scan(
     }
 
     let clusters = build_clusters(&paired);
-    let flagged_addresses: std::collections::HashSet<&str> = clusters
+    let mut flagged_addresses: std::collections::HashSet<String> = clusters
         .iter()
-        .flat_map(|c| c.members.iter().map(String::as_str))
+        .flat_map(|c| c.members.iter().cloned())
         .collect();
+
+    for (_, report) in &paired {
+        if wallet_has_elevated_risk(report) {
+            flagged_addresses.insert(report.address.clone());
+        }
+    }
 
     let wallets: Vec<ReputationResponse> = paired.into_iter().map(|(_, r)| r).collect();
     let total_scanned = wallets.len();
@@ -102,4 +109,37 @@ pub async fn post_sybil_scan(
         total_scanned,
         flagged,
     }))
+}
+
+/// Wallets that look risky on their own (not only via shared-funder clustering).
+fn wallet_has_elevated_risk(report: &ReputationResponse) -> bool {
+    if report.legacy.reputation_score <= 40 {
+        return true;
+    }
+    if report.token_risks.iter().any(|t| t.honeypot) {
+        return true;
+    }
+
+    let high_metrics = report
+        .metrics
+        .iter()
+        .filter(|m| m.risk == RiskLevel::High)
+        .count();
+    if high_metrics > 0 {
+        return true;
+    }
+
+    let medium_risk_signals = report
+        .metrics
+        .iter()
+        .filter(|m| {
+            m.risk == RiskLevel::Medium
+                && matches!(
+                    m.id.as_str(),
+                    "wallet_age" | "tx_burst" | "tx_count" | "tx_spacing" | "token_risk"
+                )
+        })
+        .count();
+
+    medium_risk_signals >= 2
 }

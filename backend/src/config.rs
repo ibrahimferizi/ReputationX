@@ -154,7 +154,7 @@ impl Config {
             funding_max_signature_pages: env::var("FUNDING_MAX_SIGNATURE_PAGES")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(5),
+                .unwrap_or(50),
             funding_page_delay_ms: env::var("FUNDING_PAGE_DELAY_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())

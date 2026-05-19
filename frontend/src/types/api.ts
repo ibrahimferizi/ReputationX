@@ -22,11 +22,18 @@ export interface TokenRisk {
   available: boolean;
 }
 
+export interface FundingSource {
+  source_type: string;
+  source_address: string | null;
+  confidence: string;
+}
+
 export interface ReputationReport {
   address: string;
   reputation_score: number;
   tier: string;
   trust_label: string;
+  funding_source?: FundingSource;
   balance: { sol: number };
   tx_stats: { count: number; capped?: boolean; max_per_hour?: number };
   wallet_age: {

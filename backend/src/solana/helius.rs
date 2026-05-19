@@ -112,8 +112,18 @@ fn extract_oldest_block_time(result: Value) -> Option<i64> {
 }
 
 fn extract_oldest_signature(result: Value) -> Option<String> {
-    let entries = gtfa_entries(&result)?;
+    extract_oldest_signatures(result, 1).into_iter().next()
+}
+
+fn extract_oldest_signatures(result: Value, limit: usize) -> Vec<String> {
+    let Some(entries) = gtfa_entries(&result) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
     for entry in entries {
+        if out.len() >= limit {
+            break;
+        }
         let failed = entry
             .get("err")
             .map(|e| !e.is_null())
@@ -122,23 +132,27 @@ fn extract_oldest_signature(result: Value) -> Option<String> {
             continue;
         }
         if let Some(sig) = entry.get("signature").and_then(|v| v.as_str()) {
-            return Some(sig.to_string());
+            out.push(sig.to_string());
         }
     }
-    None
+    out
 }
 
-async fn fetch_oldest_signature_gtfa(history_rpc: &SolanaRpc, address: &str) -> Result<Option<String>> {
+async fn fetch_oldest_signatures_gtfa(
+    history_rpc: &SolanaRpc,
+    address: &str,
+    limit: u32,
+) -> Result<Vec<String>> {
     let attempts = [
         json!({
             "transactionDetails": "signatures",
             "sortOrder": "asc",
-            "limit": 1
+            "limit": limit
         }),
         json!({
             "transactionDetails": "signatures",
             "sortOrder": "asc",
-            "limit": 1,
+            "limit": limit,
             "filters": { "status": "any" }
         }),
     ];
@@ -148,12 +162,13 @@ async fn fetch_oldest_signature_gtfa(history_rpc: &SolanaRpc, address: &str) -> 
         let result: Value = history_rpc
             .call("getTransactionsForAddress", params)
             .await?;
-        if let Some(sig) = extract_oldest_signature(result) {
-            return Ok(Some(sig));
+        let sigs = extract_oldest_signatures(result, limit as usize);
+        if !sigs.is_empty() {
+            return Ok(sigs);
         }
     }
 
-    Ok(None)
+    Ok(Vec::new())
 }
 
 /// Oldest tx via Helius `getTransactionsForAddress` (sort asc, limit 1).
@@ -188,26 +203,45 @@ pub async fn fetch_first_activity_timestamp(
     Ok(None)
 }
 
+const GTFA_FUNDING_SIG_LIMIT: u32 = 8;
+
+/// Oldest successful signatures via Helius GTFA (ascending, one RPC call).
+pub async fn try_gtfa_oldest_signatures(
+    config: &Config,
+    history_rpc: &SolanaRpc,
+    address: &str,
+) -> Result<Vec<String>> {
+    let gtfa_url = match gtfa_rpc_url(config) {
+        Some(u) => u,
+        None => return Ok(Vec::new()),
+    };
+
+    if gtfa_url == config.solana_history_rpc_url {
+        return fetch_oldest_signatures_gtfa(history_rpc, address, GTFA_FUNDING_SIG_LIMIT).await;
+    }
+
+    tracing::debug!(
+        url = %redact_api_key(&gtfa_url),
+        "Helius GTFA for oldest signatures (funding trace)"
+    );
+    fetch_oldest_signatures_gtfa(
+        &history_rpc.with_url(gtfa_url),
+        address,
+        GTFA_FUNDING_SIG_LIMIT,
+    )
+    .await
+}
+
 /// Oldest successful signature via Helius GTFA (one RPC call).
 pub async fn try_gtfa_oldest_signature(
     config: &Config,
     history_rpc: &SolanaRpc,
     address: &str,
 ) -> Result<Option<String>> {
-    let gtfa_url = match gtfa_rpc_url(config) {
-        Some(u) => u,
-        None => return Ok(None),
-    };
-
-    if gtfa_url == config.solana_history_rpc_url {
-        return fetch_oldest_signature_gtfa(history_rpc, address).await;
-    }
-
-    tracing::debug!(
-        url = %redact_api_key(&gtfa_url),
-        "Helius GTFA for oldest signature (funding trace)"
-    );
-    fetch_oldest_signature_gtfa(&history_rpc.with_url(gtfa_url), address).await
+    Ok(try_gtfa_oldest_signatures(config, history_rpc, address)
+        .await?
+        .into_iter()
+        .next())
 }
 
 /// Try GTFA on the best Helius endpoint (may differ from configured history RPC).
