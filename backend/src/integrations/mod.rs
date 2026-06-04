@@ -1,6 +1,5 @@
 pub mod rugcheck;
 pub mod solsniffer;
-pub mod tokensniffer;
 
 use crate::config::Config;
 use reqwest::Client;
@@ -28,18 +27,20 @@ pub async fn scan_wallet_tokens(
 
     for mint in mints.iter().take(config.max_token_scans) {
         let rug = rugcheck::scan_token_mint(client, config, mint).await;
+        let sniff = solsniffer::scan_token_mint(client, config, mint).await;
+
         if rug.is_honeypot {
             honeypot_detected = true;
         }
-        if rug.score.unwrap_or(0) > 4000 || rug.flags.iter().any(|f| f.contains("danger")) {
-            high_risk_tokens += 1;
-        }
-        rugcheck.push(rug);
 
-        let sniff = solsniffer::scan_token_mint(client, config, mint).await;
-        if sniff.snifscore.unwrap_or(100.0) < 40.0 {
+        // Count a mint as high-risk only once, even if flagged by both integrations
+        let is_rug_risk = rug.score.unwrap_or(0) > 4000 || rug.flags.iter().any(|f| f.contains("danger"));
+        let is_sniff_risk = sniff.snifscore.unwrap_or(100.0) < 40.0;
+        if is_rug_risk || is_sniff_risk {
             high_risk_tokens += 1;
         }
+
+        rugcheck.push(rug);
         solsniffer.push(sniff);
     }
 

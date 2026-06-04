@@ -2,6 +2,7 @@ use crate::solana::rpc::SolanaRpc;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct WalletBalance {
@@ -40,7 +41,7 @@ pub async fn get_token_holdings(rpc: &SolanaRpc, address: &str) -> Result<TokenH
         )
         .await?;
 
-    let mut mints = Vec::new();
+    let mut mints_set = HashSet::new();
     let mut estimated_nft_count = 0usize;
     let spl_token_accounts = response.value.len();
 
@@ -49,9 +50,7 @@ pub async fn get_token_holdings(rpc: &SolanaRpc, address: &str) -> Result<TokenH
             continue;
         };
         let info = parsed.info;
-        if !mints.contains(&info.mint) {
-            mints.push(info.mint.clone());
-        }
+        mints_set.insert(info.mint.clone());
 
         let amount = info
             .tokenAmount
@@ -64,6 +63,8 @@ pub async fn get_token_holdings(rpc: &SolanaRpc, address: &str) -> Result<TokenH
             estimated_nft_count += 1;
         }
     }
+
+    let mints = mints_set.into_iter().collect::<Vec<_>>();
 
     Ok(TokenHoldings {
         spl_token_accounts,

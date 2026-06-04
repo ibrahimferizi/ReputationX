@@ -26,16 +26,17 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            ApiError::InvalidAddress | ApiError::MissingAddress | ApiError::BadRequest(_) => {
-                (StatusCode::BAD_REQUEST, self.to_string())
-            }
-            ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+        let (status, user_message) = match &self {
+            ApiError::InvalidAddress => (StatusCode::BAD_REQUEST, "Invalid Solana wallet address".to_string()),
+            ApiError::MissingAddress => (StatusCode::BAD_REQUEST, "Wallet address is required".to_string()),
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()),
         };
 
+        tracing::error!("API error: {:?}", self);
+
         let body = json!({
-            "error": message,
-            "details": message,
+            "error": user_message,
         });
 
         (status, Json(body)).into_response()

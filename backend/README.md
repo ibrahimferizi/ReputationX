@@ -16,7 +16,29 @@ cargo run
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/reputation?address=` | Full wallet report (legacy + metrics) |
+| POST | `/api/sybil-scan` | Scan multiple wallets for sybil & cluster activity |
 | GET | `/health` | Health check |
+
+### POST /api/sybil-scan
+
+Request body:
+```json
+{
+  "addresses": ["11111111111111111111111111111112", "...]
+}
+```
+
+Response:
+```json
+{
+  "wallets": [...],
+  "clusters": [...],
+  "total_scanned": 2,
+  "flagged": 0
+}
+```
+
+Max 50 addresses per request.
 
 ## Build
 

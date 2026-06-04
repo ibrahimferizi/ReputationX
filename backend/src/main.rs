@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::{routing::{get, post}, Router};
 use tokio::sync::Semaphore;
 use reqwest::Client;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -65,12 +65,17 @@ async fn main() -> anyhow::Result<()> {
         http,
     };
 
+    use tower_http::cors::AllowOrigin;
+    
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|_origin, _request_head| true));
+
     let app = Router::new()
         .route("/api/reputation", get(routes::wallet::get_reputation))
         .route("/api/sybil-scan", post(routes::sybil::post_sybil_scan))
         .route("/health", get(|| async { "ok" }))
         .with_state(state)
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("WalletGuard API listening on http://{}", addr);
@@ -84,9 +89,9 @@ async fn main() -> anyhow::Result<()> {
         rpc_global_concurrency = config.rpc_global_concurrency,
         "scan config"
     );
-    tracing::info!("Solana RPC: {}", config.solana_rpc_url);
+    tracing::info!("Solana RPC: configured");
     if config.solana_history_rpc_url != config.solana_rpc_url {
-        tracing::info!("History RPC: {}", config.solana_history_rpc_url);
+        tracing::info!("History RPC: configured");
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;

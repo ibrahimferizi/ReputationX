@@ -19,7 +19,7 @@ The product direction is a **sellable reputation API** (`walletguard-v1`); the w
 | **Token scans** | Optional RugCheck + SolSniffer on a sample of held SPL mints. |
 | **Session history** | Last 5 single-wallet checks stored in the browser (`sessionStorage` only). |
 | **Network graph** | Canvas visualization of clusters and clean wallets on the Sybil Scan tab. |
-| **On-chain program** | Separate Anchor program (`walletguard/`) to store scores on-chain — **not wired to the live API/UI yet**. |
+| **On-chain program** | Anchor program for storing scores on-chain — **experimental and not integrated**. |
 
 ---
 
@@ -105,10 +105,9 @@ solana-walletguard/
 │       ├── hooks/
 │       ├── types/api.ts
 │       └── utils/normalizeReport.ts
-└── walletguard/             # Anchor on-chain program (experimental)
 ```
 
-There is also a `backend/node_modules/` tree (legacy JS deps); the **active API is Rust** in `backend/src/`.
+**Note:** An experimental Anchor on-chain program exists for storing scores on-chain, but is **not integrated** with the live API or React app.
 
 ---
 
@@ -438,17 +437,11 @@ Backend uses `CorsLayer::permissive()` when the UI calls the API cross-origin (e
 
 ---
 
-## On-chain program (`walletguard/`)
+## On-chain program (Anchor)
 
-**Anchor** program (`declare_id!` on localnet: `CzFJg6mnbgM29hSzMCL1Bvp1gZdfhi6pBq1a3smVtDhx`).
+**Status:** Experimental and not integrated.
 
-| Instruction | Purpose |
-|-------------|---------|
-| `initialize_wallet` | Create PDA storing score, tier string, risk level |
-| `update_wallet_score` | Owner updates score |
-| `get_wallet_score` | Read-only log of stored data |
-
-The on-chain tier strings in the program README still mention legacy planet names; the **live API** uses the new 1–100 + WalletGuard labels. **The program is not integrated** with the Rust API or React app in the current demo.
+An Anchor program was created to store wallet scores on-chain (`declare_id!` on localnet: `CzFJg6mnbgM29hSzMCL1Bvp1gZdfhi6pBq1a3smVtDhx`), but it is **not wired to the live API or UI**. The live reputation system operates entirely off-chain.
 
 ---
 

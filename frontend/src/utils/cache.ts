@@ -59,19 +59,22 @@ export function setCachedWallet(report: ReputationReport): void {
 
 export function getCachedScan(addresses: string[]): {
   cached: Map<string, ReputationReport>;
+  cachedClusters: any[];
   uncached: string[];
 } {
   const cached = new Map<string, ReputationReport>();
   const uncached: string[] = [];
+  let cachedClusters: any[] = [];
 
   try {
     const cacheStr = localStorage.getItem(CACHE_KEY);
     if (!cacheStr) {
-      return { cached, uncached: addresses };
+      return { cached, cachedClusters, uncached: addresses };
     }
 
     const cache: CachedScanData = JSON.parse(cacheStr);
     const now = Date.now();
+    cachedClusters = cache.clusters || [];
 
     addresses.forEach((address) => {
       const cachedData = cache.wallets[address];
@@ -82,7 +85,6 @@ export function getCachedScan(addresses: string[]): {
 
       const age = now - cachedData.timestamp;
       if (age > CACHE_DURATION_MS) {
-        // Cache expired
         delete cache.wallets[address];
         uncached.push(address);
       } else {
@@ -90,14 +92,13 @@ export function getCachedScan(addresses: string[]): {
       }
     });
 
-    // Clean up expired entries
     localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch (error) {
     console.error("Error reading cache:", error);
-    return { cached: new Map(), uncached: addresses };
+    return { cached: new Map(), cachedClusters: [], uncached: addresses };
   }
 
-  return { cached, uncached };
+  return { cached, cachedClusters, uncached };
 }
 
 export function setCachedScan(response: SybilScanResponse): void {

@@ -49,15 +49,16 @@ export function SybilScanner() {
     setFromCache(false);
 
     // Check cache first (unless force refresh)
+    let addressesToFetch = addresses;
     if (!skipCache) {
-      const { cached, uncached } = getCachedScan(addresses);
+      const { cached, cachedClusters, uncached } = getCachedScan(addresses);
 
       if (cached.size > 0 && uncached.length === 0) {
         // All wallets are cached
         const cachedWallets = Array.from(cached.values());
         const cachedResult: SybilScanResponse = {
           wallets: cachedWallets,
-          clusters: [],
+          clusters: cachedClusters,
           total_scanned: cachedWallets.length,
           flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
         };
@@ -68,17 +69,18 @@ export function SybilScanner() {
       }
 
       if (cached.size > 0) {
-        // Partial cache hit - show cached results and fetch uncached
+        // Partial cache hit - show cached results and fetch uncached only
         const cachedWallets = Array.from(cached.values());
         const partialResult: SybilScanResponse = {
           wallets: cachedWallets,
-          clusters: [],
+          clusters: cachedClusters,
           total_scanned: cachedWallets.length,
           flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
         };
         setResult(partialResult);
         setFromCache(true);
-        // Continue to fetch uncached wallets
+        // Continue to fetch uncached wallets only
+        addressesToFetch = uncached;
       }
     }
 
@@ -89,7 +91,7 @@ export function SybilScanner() {
       const response = await fetch(`${API_BASE}/api/sybil-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ addresses }),
+        body: JSON.stringify({ addresses: addressesToFetch }),
         signal: controller.signal,
       });
 
@@ -103,9 +105,24 @@ export function SybilScanner() {
       }
 
       const data = (await response.json()) as SybilScanResponse;
-      setResult(data);
+      
+      // Merge with cached results if partial hit
+      if (result && result.wallets.length > 0) {
+        const mergedWallets = [...result.wallets, ...data.wallets];
+        const mergedClusters = [...result.clusters, ...data.clusters];
+        const mergedResult: SybilScanResponse = {
+          wallets: mergedWallets,
+          clusters: mergedClusters,
+          total_scanned: mergedWallets.length,
+          flagged: mergedWallets.filter((w) => walletHasElevatedRisk(w)).length,
+        };
+        setResult(mergedResult);
+        setCachedScan(mergedResult);
+      } else {
+        setResult(data);
+        setCachedScan(data);
+      }
       setFromCache(false);
-      setCachedScan(data);
     } catch (err: unknown) {
       let message = err instanceof Error ? err.message : "Sybil scan failed";
       if (err instanceof DOMException && err.name === "AbortError") {
