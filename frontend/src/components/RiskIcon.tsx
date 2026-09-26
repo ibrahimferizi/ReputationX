@@ -1,13 +1,14 @@
 import type { RiskLevel } from "../types/api";
 
 const ICONS: Record<RiskLevel, { glyph: string; color: string; label: string }> = {
+  unknown: { glyph: "?", color: "#687787", label: "Risk not assessed" },
   low: { glyph: "✓", color: "#28a745", label: "Low risk" },
   medium: { glyph: "!", color: "#ffc107", label: "Medium risk" },
   high: { glyph: "!", color: "#dc3545", label: "High risk" },
 };
 
 export function RiskIcon({ risk }: { risk: RiskLevel }) {
-  const { glyph, color, label } = ICONS[risk] ?? ICONS.medium;
+  const { glyph, color, label } = ICONS[risk] ?? ICONS.unknown;
   return (
     <span
       title={label}

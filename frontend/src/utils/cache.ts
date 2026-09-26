@@ -1,7 +1,7 @@
 import type { ReputationReport, SybilScanResponse } from "../types/api";
 
-const CACHE_KEY = "walletguard_scan_cache";
-const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_KEY = "walletguard_scan_cache_activity_v3";
+const CACHE_DURATION_MS = 5 * 60 * 1000; // Five minutes; server also caches reports.
 
 interface CachedWalletData {
   report: ReputationReport;
@@ -10,8 +10,7 @@ interface CachedWalletData {
 
 interface CachedScanData {
   wallets: Record<string, CachedWalletData>;
-  clusters: any[];
-  timestamp: number;
+  scan?: { key: string; response: SybilScanResponse; timestamp: number };
 }
 
 export function getCachedWallet(address: string): ReputationReport | null {
@@ -44,8 +43,11 @@ export function setCachedWallet(report: ReputationReport): void {
     const cacheStr = localStorage.getItem(CACHE_KEY);
     const cache: CachedScanData = cacheStr
       ? JSON.parse(cacheStr)
-      : { wallets: {}, clusters: [], timestamp: Date.now() };
+      : { wallets: {} };
 
+    if (cache.scan?.response.wallets.some((wallet) => wallet.address === report.address)) {
+      delete cache.scan;
+    }
     cache.wallets[report.address] = {
       report,
       timestamp: Date.now(),
@@ -57,48 +59,22 @@ export function setCachedWallet(report: ReputationReport): void {
   }
 }
 
-export function getCachedScan(addresses: string[]): {
-  cached: Map<string, ReputationReport>;
-  cachedClusters: any[];
-  uncached: string[];
-} {
-  const cached = new Map<string, ReputationReport>();
-  const uncached: string[] = [];
-  let cachedClusters: any[] = [];
+function scanKey(addresses: string[]): string {
+  return JSON.stringify([...new Set(addresses)].sort());
+}
 
+export function getCachedScan(addresses: string[]): SybilScanResponse | null {
   try {
-    const cacheStr = localStorage.getItem(CACHE_KEY);
-    if (!cacheStr) {
-      return { cached, cachedClusters, uncached: addresses };
-    }
-
-    const cache: CachedScanData = JSON.parse(cacheStr);
-    const now = Date.now();
-    cachedClusters = cache.clusters || [];
-
-    addresses.forEach((address) => {
-      const cachedData = cache.wallets[address];
-      if (!cachedData) {
-        uncached.push(address);
-        return;
-      }
-
-      const age = now - cachedData.timestamp;
-      if (age > CACHE_DURATION_MS) {
-        delete cache.wallets[address];
-        uncached.push(address);
-      } else {
-        cached.set(address, cachedData.report);
-      }
-    });
-
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
-  } catch (error) {
-    console.error("Error reading cache:", error);
-    return { cached: new Map(), cachedClusters: [], uncached: addresses };
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const cache: CachedScanData = JSON.parse(raw);
+    const scan = cache.scan;
+    if (!scan || scan.key !== scanKey(addresses) ||
+        Date.now() - scan.timestamp >= CACHE_DURATION_MS) return null;
+    return scan.response;
+  } catch {
+    return null;
   }
-
-  return { cached, cachedClusters, uncached };
 }
 
 export function setCachedScan(response: SybilScanResponse): void {
@@ -106,7 +82,7 @@ export function setCachedScan(response: SybilScanResponse): void {
     const cacheStr = localStorage.getItem(CACHE_KEY);
     const cache: CachedScanData = cacheStr
       ? JSON.parse(cacheStr)
-      : { wallets: {}, clusters: [], timestamp: Date.now() };
+      : { wallets: {} };
 
     response.wallets.forEach((wallet) => {
       cache.wallets[wallet.address] = {
@@ -115,8 +91,11 @@ export function setCachedScan(response: SybilScanResponse): void {
       };
     });
 
-    cache.clusters = response.clusters;
-    cache.timestamp = Date.now();
+    cache.scan = {
+      key: scanKey(response.wallets.map((wallet) => wallet.address)),
+      response,
+      timestamp: Date.now(),
+    };
 
     localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch (error) {

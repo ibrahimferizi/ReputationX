@@ -5,14 +5,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::analysis::cluster::{build_clusters, WalletCluster};
-use crate::analysis::reputation::build_wallet_reputation;
 use crate::analysis::risk::RiskLevel;
 use crate::error::ApiError;
 use crate::models::response::ReputationResponse;
 use crate::solana;
 use crate::AppState;
 
-const MAX_SYBIL_SCAN_ADDRESSES: usize = 50;
+const MAX_SYBIL_SCAN_ADDRESSES: usize = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct SybilScanRequest {
@@ -42,6 +41,7 @@ pub async fn post_sybil_scan(
     }
 
     let mut normalized: Vec<String> = Vec::with_capacity(body.addresses.len());
+    let mut seen = std::collections::HashSet::new();
     for raw in &body.addresses {
         let address = raw.trim();
         if address.is_empty() {
@@ -50,42 +50,38 @@ pub async fn post_sybil_scan(
             ));
         }
         solana::validate_address(address).map_err(|_| ApiError::InvalidAddress)?;
-        normalized.push(address.to_string());
+        if seen.insert(address.to_string()) {
+            normalized.push(address.to_string());
+        }
     }
 
     let wallet_sem = Arc::new(Semaphore::new(state.config.sybil_scan_concurrency));
-    let mut tasks = Vec::with_capacity(normalized.len());
+    let mut tasks = tokio::task::JoinSet::new();
 
-    for address in normalized {
+    for (index, address) in normalized.into_iter().enumerate() {
         let state = state.clone();
         let wallet_sem = wallet_sem.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let _permit = wallet_sem
                 .acquire()
                 .await
                 .map_err(|e| ApiError::internal(format!("sybil scan slot: {e}")))?;
 
-            let report = build_wallet_reputation(
-                &state.http,
-                &state.rpc,
-                &state.history_rpc,
-                &state.config,
-                &address,
-            )
-            .await
-            .map_err(ApiError::internal)?;
-
-            Ok::<_, ApiError>((address, report))
-        }));
+            let report = state.service.report(&state, &address).await?;
+            Ok::<_, ApiError>((index, address, report))
+        });
     }
 
-    let mut paired: Vec<(String, ReputationResponse)> = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        let pair = task
-            .await
-            .map_err(|e| ApiError::internal(format!("scan task failed: {e}")))??;
-        paired.push(pair);
+    // Dropping JoinSet on failure/timeout aborts every remaining child task.
+    let mut completed = Vec::with_capacity(tasks.len());
+    while let Some(task) = tasks.join_next().await {
+        completed.push(task.map_err(|_| ApiError::internal("scan task failed"))??);
     }
+    completed.sort_by_key(|(index, _, _)| *index);
+    let paired: Vec<_> = completed
+        .into_iter()
+        .map(|(_, address, report)| (address, report))
+        .collect();
 
     let clusters = build_clusters(&paired);
     let mut flagged_addresses: std::collections::HashSet<String> = clusters
@@ -113,9 +109,6 @@ pub async fn post_sybil_scan(
 
 /// Wallets that look risky on their own (not only via shared-funder clustering).
 fn wallet_has_elevated_risk(report: &ReputationResponse) -> bool {
-    if report.legacy.reputation_score <= 40 {
-        return true;
-    }
     if report.token_risks.iter().any(|t| t.honeypot) {
         return true;
     }

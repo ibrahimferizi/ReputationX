@@ -16,12 +16,19 @@ fn normalize_unix_timestamp(ts: i64) -> i64 {
 }
 
 /// One Helius REST call — much faster than paging `getSignaturesForAddress` on rate-limited RPCs.
+#[derive(Debug)]
+pub struct RecentTransactions {
+    pub timestamps: Vec<i64>,
+    pub successful_count: u64,
+    pub fetched_count: usize,
+}
+
 pub async fn fetch_recent_timestamps(
     client: &Client,
     api_key: &str,
     address: &str,
     limit: u32,
-) -> Result<Vec<i64>> {
+) -> Result<RecentTransactions> {
     let url = format!("https://api.helius.xyz/v0/addresses/{address}/transactions");
 
     let response = client
@@ -42,7 +49,18 @@ pub async fn fetch_recent_timestamps(
 
     let txs: Vec<Value> = response.json().await.context("helius invalid json")?;
 
-    let mut timestamps: Vec<i64> = txs
+    Ok(parse_recent_transactions(&txs))
+}
+
+fn parse_recent_transactions(txs: &[Value]) -> RecentTransactions {
+    let successful: Vec<_> = txs
+        .iter()
+        .filter(|tx| {
+            tx.get("transactionError").is_none_or(Value::is_null)
+                && tx.get("err").is_none_or(Value::is_null)
+        })
+        .collect();
+    let mut timestamps: Vec<i64> = successful
         .iter()
         .filter_map(|tx| {
             tx.get("timestamp")
@@ -53,7 +71,11 @@ pub async fn fetch_recent_timestamps(
         .collect();
 
     timestamps.sort_unstable();
-    Ok(timestamps)
+    RecentTransactions {
+        timestamps,
+        successful_count: successful.len() as u64,
+        fetched_count: txs.len(),
+    }
 }
 
 pub fn history_rpc_supports_gtfa(history_rpc_url: &str) -> bool {
@@ -97,10 +119,7 @@ fn gtfa_entries(result: &Value) -> Option<&Vec<Value>> {
 fn extract_oldest_block_time(result: Value) -> Option<i64> {
     let entries = gtfa_entries(&result)?;
     for entry in entries {
-        let failed = entry
-            .get("err")
-            .map(|e| !e.is_null())
-            .unwrap_or(false);
+        let failed = entry.get("err").map(|e| !e.is_null()).unwrap_or(false);
         if failed {
             continue;
         }
@@ -109,10 +128,6 @@ fn extract_oldest_block_time(result: Value) -> Option<i64> {
         }
     }
     None
-}
-
-fn extract_oldest_signature(result: Value) -> Option<String> {
-    extract_oldest_signatures(result, 1).into_iter().next()
 }
 
 fn extract_oldest_signatures(result: Value, limit: usize) -> Vec<String> {
@@ -124,10 +139,7 @@ fn extract_oldest_signatures(result: Value, limit: usize) -> Vec<String> {
         if out.len() >= limit {
             break;
         }
-        let failed = entry
-            .get("err")
-            .map(|e| !e.is_null())
-            .unwrap_or(false);
+        let failed = entry.get("err").map(|e| !e.is_null()).unwrap_or(false);
         if failed {
             continue;
         }
@@ -220,28 +232,13 @@ pub async fn try_gtfa_oldest_signatures(
         return fetch_oldest_signatures_gtfa(history_rpc, address, GTFA_FUNDING_SIG_LIMIT).await;
     }
 
-    tracing::debug!(
-        url = %redact_api_key(&gtfa_url),
-        "Helius GTFA for oldest signatures (funding trace)"
-    );
+    tracing::debug!("Helius GTFA for oldest signatures (funding trace)");
     fetch_oldest_signatures_gtfa(
         &history_rpc.with_url(gtfa_url),
         address,
         GTFA_FUNDING_SIG_LIMIT,
     )
     .await
-}
-
-/// Oldest successful signature via Helius GTFA (one RPC call).
-pub async fn try_gtfa_oldest_signature(
-    config: &Config,
-    history_rpc: &SolanaRpc,
-    address: &str,
-) -> Result<Option<String>> {
-    Ok(try_gtfa_oldest_signatures(config, history_rpc, address)
-        .await?
-        .into_iter()
-        .next())
 }
 
 /// Try GTFA on the best Helius endpoint (may differ from configured history RPC).
@@ -259,23 +256,24 @@ pub async fn try_gtfa_first_activity(
         return fetch_first_activity_timestamp(history_rpc, address).await;
     }
 
-    tracing::info!(
-        url = %redact_api_key(&gtfa_url),
-        "using Helius RPC for wallet age (getTransactionsForAddress)"
-    );
+    tracing::info!("using Helius RPC for wallet age (getTransactionsForAddress)");
     fetch_first_activity_timestamp(&history_rpc.with_url(gtfa_url), address).await
 }
 
-fn redact_api_key(url: &str) -> String {
-    if let Some(start) = url.find("api-key=") {
-        let mut s = url.to_string();
-        if let Some(end) = s[start + 8..].find('&') {
-            s.replace_range(start + 8..start + 8 + end, "***");
-        } else {
-            s.truncate(start + 8);
-            s.push_str("***");
-        }
-        return s;
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+
+    #[test]
+    fn counts_successes_separately_from_timestamps_and_page_size() {
+        let recent = parse_recent_transactions(&[
+            json!({"timestamp": 1_700_000_000, "transactionError": null}),
+            json!({"timestamp": 1_700_000_001, "transactionError": "failed"}),
+            json!({"timestamp": 1_700_000_002, "err": {"InstructionError": [0, "failed"]}}),
+            json!({"transactionError": null}),
+        ]);
+        assert_eq!(recent.fetched_count, 4);
+        assert_eq!(recent.successful_count, 2);
+        assert_eq!(recent.timestamps, vec![1_700_000_000]);
     }
-    url.to_string()
 }

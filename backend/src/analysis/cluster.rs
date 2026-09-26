@@ -24,6 +24,13 @@ pub fn build_clusters(results: &[(String, ReputationResponse)]) -> Vec<WalletClu
         .collect();
 
     for (address, report) in results {
+        // Shared infrastructure alone does not link owners.
+        if matches!(
+            report.funding_source.source_type.as_str(),
+            "cex" | "bridge" | "unknown"
+        ) {
+            continue;
+        }
         if let Some(funder) = report.funding_source.source_address.as_deref() {
             by_funder
                 .entry(funder.to_string())
@@ -40,6 +47,10 @@ pub fn build_clusters(results: &[(String, ReputationResponse)]) -> Vec<WalletClu
         }
 
         members.sort_unstable();
+        members.dedup();
+        if members.len() < 2 {
+            continue;
+        }
 
         let size = members.len();
         let mut reasons = vec![format!("{size} wallets share the same funding source")];
@@ -52,7 +63,7 @@ pub fn build_clusters(results: &[(String, ReputationResponse)]) -> Vec<WalletClu
         let mut suspicion = base_suspicion(size).to_string();
 
         if wallets_in_same_7_day_window(&member_reports) {
-            reasons.push("wallets created within same 7-day window".into());
+            reasons.push("first observed activity falls within the same 7-day window".into());
             suspicion = bump_suspicion(&suspicion);
         }
 
@@ -65,7 +76,7 @@ pub fn build_clusters(results: &[(String, ReputationResponse)]) -> Vec<WalletClu
         });
     }
 
-    clusters.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+    clusters.sort_by_key(|cluster| std::cmp::Reverse(cluster.members.len()));
     clusters
 }
 
@@ -93,6 +104,11 @@ fn bump_suspicion(current: &str) -> String {
 }
 
 fn wallets_in_same_7_day_window(reports: &[&ReputationResponse]) -> bool {
+    if reports.iter().any(|r| {
+        r.legacy.wallet_age.age_capped || r.legacy.wallet_age.first_activity_unix.is_none()
+    }) {
+        return false;
+    }
     let timestamps: Vec<i64> = reports
         .iter()
         .filter_map(|r| r.legacy.wallet_age.first_activity_unix)
@@ -115,9 +131,14 @@ mod tests {
     };
     use crate::solana::FundingSource;
 
-    fn sample_report(address: &str, funder: Option<&str>, first_unix: Option<i64>) -> ReputationResponse {
+    fn sample_report(
+        address: &str,
+        funder: Option<&str>,
+        first_unix: Option<i64>,
+    ) -> ReputationResponse {
         ReputationResponse {
             address: address.into(),
+            generated_at: None,
             legacy: LegacyReputationResponse {
                 reputation_score: 50,
                 tier: "Fair".into(),
@@ -126,6 +147,7 @@ mod tests {
                 tx_stats: TxStats {
                     count: 0,
                     capped: false,
+                    sampled: false,
                     max_per_hour: 0,
                 },
                 wallet_age: WalletAge {
@@ -136,8 +158,8 @@ mod tests {
                 },
                 nft_stats: NftStats { count: 0 },
                 defi_exposure: DefiExposure {
-                    total_usd: 0.0,
-                    interaction_count: 0,
+                    total_usd: None,
+                    interaction_count: None,
                 },
             },
             metrics: vec![],
@@ -153,7 +175,9 @@ mod tests {
                 source_address: funder.map(str::to_string),
                 confidence: "medium".into(),
             },
-            api_version: "walletguard-v1".into(),
+            api_version: "walletguard-v2".into(),
+            scoring_version: "activity-v2".into(),
+            coverage: Default::default(),
         }
     }
 
@@ -162,7 +186,10 @@ mod tests {
         let funder = "Funder1111111111111111111111111111111111111";
         let results = vec![
             ("a".into(), sample_report("a", Some(funder), Some(1_000))),
-            ("b".into(), sample_report("b", Some(funder), Some(1_100))),
+            (
+                "b".into(),
+                sample_report("b", Some(funder), Some(1_000 + 8 * 86_400)),
+            ),
         ];
         let clusters = build_clusters(&results);
         assert_eq!(clusters.len(), 1);
@@ -176,7 +203,10 @@ mod tests {
         let results: Vec<_> = (0..10)
             .map(|i| {
                 let addr = format!("wallet{i}");
-                (addr.clone(), sample_report(&addr, Some(funder), Some(1_000)))
+                (
+                    addr.clone(),
+                    sample_report(&addr, Some(funder), Some(1_000)),
+                )
             })
             .collect();
         let clusters = build_clusters(&results);
@@ -189,14 +219,28 @@ mod tests {
         let base = 1_700_000_000_i64;
         let results = vec![
             ("a".into(), sample_report("a", Some(funder), Some(base))),
-            ("b".into(), sample_report("b", Some(funder), Some(base + 86_400))),
-            ("c".into(), sample_report("c", Some(funder), Some(base + 2 * 86_400))),
+            (
+                "b".into(),
+                sample_report("b", Some(funder), Some(base + 86_400)),
+            ),
+            (
+                "c".into(),
+                sample_report("c", Some(funder), Some(base + 2 * 86_400)),
+            ),
         ];
         let clusters = build_clusters(&results);
-        assert_eq!(clusters[0].suspicion, "medium");
-        assert!(clusters[0]
-            .reasons
-            .iter()
-            .any(|r| r.contains("7-day")));
+        assert_eq!(clusters[0].suspicion, "high");
+        assert!(clusters[0].reasons.iter().any(|r| r.contains("7-day")));
+    }
+    #[test]
+    fn incomplete_age_does_not_escalate_and_known_services_do_not_cluster() {
+        let mut a = sample_report("a", Some("funder"), Some(1000));
+        let b = sample_report("b", Some("funder"), Some(1001));
+        a.legacy.wallet_age.age_capped = true;
+        let clusters = build_clusters(&[("a".into(), a.clone()), ("b".into(), b.clone())]);
+        assert_eq!(clusters[0].suspicion, "low");
+        a.funding_source.source_type = "cex".into();
+        assert!(build_clusters(&[("a".into(), a), ("b".into(), b.clone())]).is_empty());
+        assert!(build_clusters(&[("b".into(), b.clone()), ("b".into(), b)]).is_empty());
     }
 }

@@ -1,4 +1,9 @@
+import { apiError } from "../utils/apiError";
 import { useMemo, useState } from "react";
+import { isSolanaAddress } from "../utils/address";
+import { ScanCoverage } from "./ScanCoverage";
+import { normalizeReport } from "../utils/normalizeReport";
+import { individualFlagReasons } from "../utils/coverage";
 import { ClusterGraph } from "./ClusterGraph";
 import type { ClusterSuspicion, ReputationReport, SybilScanResponse } from "../types/api";
 import {
@@ -10,7 +15,7 @@ import {
 
 /** Empty = same-origin; Vite proxies /api → backend in dev. Set VITE_API_URL to override. */
 const API_BASE = import.meta.env.VITE_API_URL || "";
-const MAX_ADDRESSES = 50;
+const MAX_ADDRESSES = 10;
 
 const SUSPICION_STYLES: Record<
   ClusterSuspicion,
@@ -29,10 +34,10 @@ export function SybilScanner() {
   const [fromCache, setFromCache] = useState(false);
 
   const runScan = async (skipCache = false) => {
-    const addresses = input
+    const addresses = [...new Set(input
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter(Boolean))];
 
     if (addresses.length === 0) {
       setError("Paste at least one wallet address (one per line).");
@@ -43,44 +48,23 @@ export function SybilScanner() {
       return;
     }
 
+    if (addresses.some((address) => !isSolanaAddress(address))) {
+      setError("Every line must contain a valid Solana address.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
     setResult(null);
     setFromCache(false);
 
-    // Check cache first (unless force refresh)
-    let addressesToFetch = addresses;
     if (!skipCache) {
-      const { cached, cachedClusters, uncached } = getCachedScan(addresses);
-
-      if (cached.size > 0 && uncached.length === 0) {
-        // All wallets are cached
-        const cachedWallets = Array.from(cached.values());
-        const cachedResult: SybilScanResponse = {
-          wallets: cachedWallets,
-          clusters: cachedClusters,
-          total_scanned: cachedWallets.length,
-          flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
-        };
-        setResult(cachedResult);
+      const cached = getCachedScan(addresses);
+      if (cached) {
+        setResult(cached);
         setFromCache(true);
         setLoading(false);
         return;
-      }
-
-      if (cached.size > 0) {
-        // Partial cache hit - show cached results and fetch uncached only
-        const cachedWallets = Array.from(cached.values());
-        const partialResult: SybilScanResponse = {
-          wallets: cachedWallets,
-          clusters: cachedClusters,
-          total_scanned: cachedWallets.length,
-          flagged: cachedWallets.filter((w) => walletHasElevatedRisk(w)).length,
-        };
-        setResult(partialResult);
-        setFromCache(true);
-        // Continue to fetch uncached wallets only
-        addressesToFetch = uncached;
       }
     }
 
@@ -91,45 +75,25 @@ export function SybilScanner() {
       const response = await fetch(`${API_BASE}/api/sybil-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ addresses: addressesToFetch }),
+        body: JSON.stringify({ addresses }),
         signal: controller.signal,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          (errorData as { error?: string; details?: string }).error ||
-            (errorData as { details?: string }).details ||
-            "Sybil scan failed"
-        );
-      }
+      if (!response.ok) throw await apiError(response);
 
       const data = (await response.json()) as SybilScanResponse;
+      data.wallets = data.wallets.map((wallet) => normalizeReport(wallet as unknown as Record<string, unknown>));
       
-      // Merge with cached results if partial hit
-      if (result && result.wallets.length > 0) {
-        const mergedWallets = [...result.wallets, ...data.wallets];
-        const mergedClusters = [...result.clusters, ...data.clusters];
-        const mergedResult: SybilScanResponse = {
-          wallets: mergedWallets,
-          clusters: mergedClusters,
-          total_scanned: mergedWallets.length,
-          flagged: mergedWallets.filter((w) => walletHasElevatedRisk(w)).length,
-        };
-        setResult(mergedResult);
-        setCachedScan(mergedResult);
-      } else {
-        setResult(data);
-        setCachedScan(data);
-      }
+      setResult(data);
+      setCachedScan(data);
       setFromCache(false);
     } catch (err: unknown) {
       let message = err instanceof Error ? err.message : "Sybil scan failed";
       if (err instanceof DOMException && err.name === "AbortError") {
-        message = "Scan timed out after 3 minutes. Try fewer addresses or use SCAN_MODE=fast.";
+        message = "The scan took too long. Try fewer addresses or retry later.";
       } else if (err instanceof TypeError && message.toLowerCase().includes("fetch")) {
         message =
-          "Could not reach the API. Start the backend (cd backend && cargo run) and restart the Vite dev server after pulling.";
+          "The service could not be reached. It may be waking up; wait a minute and retry.";
       }
       setError(message);
     } finally {
@@ -227,7 +191,7 @@ export function SybilScanner() {
             opacity: loading || addressCount === 0 ? 0.5 : 1,
           }}
         >
-          {loading ? "Refreshing…" : "Force Refresh"}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
@@ -287,9 +251,10 @@ export function SybilScanner() {
             {result.total_scanned} wallet{result.total_scanned === 1 ? "" : "s"} scanned ·{" "}
             {result.flagged} flagged ({clusterFlaggedSet.size} in{" "}
             {result.clusters.length} cluster{result.clusters.length === 1 ? "" : "s"},{" "}
-            {atRiskWallets.filter((w) => !clusterFlaggedSet.has(w.address)).length} elevated risk)
+            {atRiskWallets.filter((w) => !clusterFlaggedSet.has(w.address)).length} individual flags outside clusters)
           </p>
 
+          <p className="score-context">Flags are review signals, not proof of a sybil relationship or malicious ownership. Unresolved funders limit clustering. No flags detected does not mean all checks were completed.</p>
           {atRiskWallets.length > 0 && (
             <>
               <h3 style={{ margin: "0 0 0.75rem" }}>Flagged wallets</h3>
@@ -299,13 +264,14 @@ export function SybilScanner() {
                     key={wallet.address}
                     wallet={wallet}
                     inCluster={clusterFlaggedSet.has(wallet.address)}
+                    fromCache={fromCache}
                   />
                 ))}
               </div>
             </>
           )}
 
-          {(result.clusters.length > 0 || cleanWallets.length > 0) && (
+          {result.wallets.length > 0 && (
             <ClusterGraph 
               clusters={result.clusters} 
               cleanWallets={cleanWallets}
@@ -323,12 +289,12 @@ export function SybilScanner() {
               </div>
             </>
           ) : (
-            <p className="muted">No shared funding clusters detected.</p>
+            <p className="muted">No shared funding clusters detected in the available evidence.</p>
           )}
 
-          <h3 style={{ margin: "1.5rem 0 0.75rem" }}>Clean wallets</h3>
+          <h3 style={{ margin: "1.5rem 0 0.75rem" }}>No flags detected</h3>
           {cleanWallets.length === 0 ? (
-            <p className="muted">No wallets passed without cluster or reputation flags.</p>
+            <p className="muted">Every wallet has at least one cluster or individual flag.</p>
           ) : (
             <ul
               style={{
@@ -340,9 +306,9 @@ export function SybilScanner() {
                 gap: "0.35rem",
               }}
             >
-              {cleanWallets.map((addr) => (
-                <li key={addr} className="mono" style={{ fontSize: "0.85rem" }}>
-                  {addr}
+              {result.wallets.filter((wallet) => !flaggedSet.has(wallet.address)).map((wallet) => (
+                <li key={wallet.address}>
+                  <WalletResultRow wallet={wallet} inCluster={false} fromCache={fromCache} />
                 </li>
               ))}
             </ul>
@@ -354,26 +320,20 @@ export function SybilScanner() {
 }
 
 function walletHasElevatedRisk(wallet: ReputationReport): boolean {
-  if (wallet.reputation_score <= 40) return true;
-  if (wallet.token_risks?.some((t) => t.honeypot)) return true;
-  if (wallet.metrics.some((m) => m.risk === "high")) return true;
-  const mediumSignals = wallet.metrics.filter(
-    (m) =>
-      m.risk === "medium" &&
-      ["wallet_age", "tx_burst", "tx_count", "tx_spacing", "token_risk"].includes(m.id),
-  ).length;
-  return mediumSignals >= 2;
+  return individualFlagReasons(wallet).length > 0;
 }
 
 function WalletResultRow({
   wallet,
   inCluster,
+  fromCache,
 }: {
   wallet: ReputationReport;
   inCluster: boolean;
+  fromCache: boolean;
 }) {
   const funder = wallet.funding_source;
-  const highMetrics = wallet.metrics.filter((m) => m.risk === "high");
+  const reasons = individualFlagReasons(wallet);
   const cacheTimestamp = getCacheTimestamp(wallet.address);
 
   return (
@@ -395,8 +355,8 @@ function WalletResultRow({
         {inCluster && (
           <span style={{ fontSize: "0.72rem", color: "#fca5a5" }}>shared funder cluster</span>
         )}
-        {!inCluster && <span style={{ fontSize: "0.72rem", color: "#fdba74" }}>elevated risk</span>}
-        {cacheTimestamp && (
+        {!inCluster && <span style={{ fontSize: "0.72rem", color: "#aab4c0" }}>{reasons.length > 0 ? "individual flags" : "no flags detected"}</span>}
+        {fromCache && cacheTimestamp && (
           <span style={{ fontSize: "0.72rem", color: "#639922" }}>
             cached · {formatCacheTimestamp(cacheTimestamp)}
           </span>
@@ -412,11 +372,12 @@ function WalletResultRow({
           <span>unknown (clustering needs a resolved funding source)</span>
         )}
       </p>
-      {highMetrics.length > 0 && (
+      {reasons.length > 0 && (
         <p style={{ margin: "0.25rem 0 0", color: "#8b949e", fontSize: "0.8rem" }}>
-          High risk: {highMetrics.map((m) => m.label).join(", ")}
+          Reasons: {reasons.join(" · ")}
         </p>
       )}
+      <ScanCoverage report={wallet} compact />
     </div>
   );
 }

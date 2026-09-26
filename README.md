@@ -1,145 +1,99 @@
 # WalletGuard
 
-Solana wallet reputation analysis tool with sybil detection capabilities.
+A public-beta project originating at a hackathon for investigating Solana wallet activity. Paste one address for a reputation report, or up to 10 for shared-funder cluster analysis.
 
-## Overview
+The app reads Solana mainnet data and computes heuristic scores off-chain. It does not connect wallets, sign transactions, or deploy a smart contract. There is no database or login.
 
-WalletGuard provides on-chain Solana wallet reputation scoring and sybil attack detection through a Rust-based API and React frontend.
+- **Frontend:** React 19, TypeScript, Vite 8, CSS and a custom Canvas graph.
+- **Backend:** Rust, Axum 0.7, Tokio, reqwest; REST API on port 3001.
+- **Data:** Solana JSON-RPC; optional Helius history, RugCheck and SolSniffer.
+- **Browser storage:** Five-minute report/batch cache in localStorage; last five wallet checks in sessionStorage.
 
-## Features
+[DOCUMENTATION.md](DOCUMENTATION.md) describes the architecture, scoring rules, coverage and service limits.
 
-- **Wallet Reputation Scoring**: Analyzes wallet trustworthiness based on on-chain activity
-- **Sybil Detection**: Identifies clusters of wallets sharing funding sources
-- **Risk Metrics**: Detailed analysis of wallet age, transaction patterns, and token interactions
-- **Caching**: 24-hour local storage cache to reduce API calls
-- **Interactive Graph**: Visual representation of wallet clusters and risk levels
+## Run locally
 
-## Project Structure
+Use Node.js 24+ (`frontend/.nvmrc` selects 24) and Rust 1.95 (the tested compiler and Docker builder).
 
-```
-.
-├── backend/          # Rust API server
-├── frontend/         # React + TypeScript + Vite frontend
-└── README.md         # This file
-```
-
-## Prerequisites
-
-- Rust (for backend)
-- Node.js (for frontend)
-- Solana RPC URL (public RPCs are rate-limited, consider using a paid RPC)
-
-## Backend Setup
+In one terminal:
 
 ```bash
 cd backend
-cp .env.example .env
-# Edit .env and set SOLANA_RPC_URL
-cargo run
+# First setup only; preserve your existing .env if present:
+cp -n .env.example .env
+# Set SOLANA_RPC_URL; configure HELIUS_API_KEY if using Helius.
+cargo run --locked
 ```
 
-The API will be available at `http://localhost:3001`
-
-### Backend Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/reputation?address=` | Full wallet reputation report |
-| POST | `/api/sybil-scan` | Batch wallet sybil analysis |
-| GET | `/health` | Health check |
-
-### Build Backend
-
-```bash
-cd backend
-cargo build --release
-./target/release/walletguard-api
-```
-
-### Docker (Backend)
-
-```bash
-cd backend
-docker build -t walletguard-api .
-docker run -p 3001:3001 -e SOLANA_RPC_URL=... walletguard-api
-```
-
-## Frontend Setup
+In another terminal:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:5173`
+Open http://localhost:5173. Vite proxies `/api` and `/health` to http://127.0.0.1:3001. Leave `VITE_API_URL` unset for this setup.
 
-### Build Frontend
+The backend example contains placeholder Helius credentials: replace them or use a different RPC. Without any configuration, the backend defaults to the public Solana mainnet endpoint. Scan speed and coverage depend on the provider and rate limits.
+
+## Reports and coverage
+
+Reports use `api_version: walletguard-v2` and `scoring_version: activity-v3`. The heuristic activity score is scaled to the implemented maximum (710 raw points), making the full 1–100 range reachable. It is not a safety probability or a validated identity assessment.
+
+Both screens show transaction sampling, the observed time window, token-check coverage and funding availability. Unknown checks use a neutral `?` icon. Token checks distinguish skipped, timed-out, unavailable, partial and completed scans. DeFi interaction count and USD exposure are **null / Not assessed** until instruction-level analysis is implemented.
+
+Version 3 separates token findings from the score and uses activity bands instead of trust labels. A low score alone does not flag a wallet. Reports include generation timestamps; server caching can reuse a recent report even after Refresh.
+
+Old browser caches and recent-score history are isolated from this scoring version. After updating, restart the backend with `cargo run --locked` and refresh the frontend.
+
+## API
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/health` | Process health; does not verify upstream providers |
+| GET | `/api/reputation?address=...` | Wallet metrics, score and funding source |
+| POST | `/api/sybil-scan` | `{"addresses":["..."]}`; maximum 10 entries, duplicates scanned once |
+
+`SCAN_MODE=fast` is the default. External token checks default to disabled in fast mode. Set `SKIP_EXTERNAL_SCANS=false` to enable them. Wallet-age and funding pagination have separate limits; fast mode does not guarantee a short request.
+
+## Checks and builds
 
 ```bash
 cd frontend
+npm test
+npm run lint
 npm run build
+npm audit
 ```
 
-## Sample Test Addresses
-
-Use these addresses to test the wallet reputation and sybil scanning features:
-
-```
-HgR2ifA5t7EMMfciZr65YZVaYxDQvUbLDrpd9tmkQT61
-53unSgGWqEWANcPYRF35B2Bgf8BkszUtcccKiXwGGLyr
-7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump
-42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi
-7zqc5Zsqk4HPKrKZg9AhUkBQQej3HxRhqrQaRP1qoyY6
-3JPYL9xEPFjefV3tccrUwhLzME1mMq2dQSDeDebgzQi6
-CdFHmaj37EtjgRqvyt6vZqoA9tuMSvKLSmbgpuV6ejaP
-hyDQ4Nz1eYyegS6JfenyKwKzYxRsCWCriYSAjtzP4Vg
-HfMbPyDdZH6QMaDDUokjYCkHxzjoGBMpgaUvpLWGbF5p
-25JUPL6ksapY1iCLWkFcSaXaA6Ar3W7JDCdPjeSApump
+```bash
+cd backend
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --release --locked
 ```
 
-## Usage
+For an API smoke test against local mock RPC/token providers (no credentials or credits):
 
-### Single Wallet Check
+```bash
+cd backend
+cargo build --locked
+python3 tests/api_smoke.py
+```
 
-1. Navigate to the "Wallet Check" tab
-2. Enter a Solana wallet address
-3. Click "Check wallet" to analyze
-4. Results are cached for 24 hours
+Frontend build output is `frontend/dist/`. Backend output is `backend/target/release/walletguard-api`.
 
-### Sybil Scan
+## Deployment
 
-1. Navigate to the "Sybil Scan" tab
-2. Paste multiple wallet addresses (one per line)
-3. Click "Scan" to analyze batch
-4. View cluster graph and risk analysis
-5. Use "Force Refresh" to bypass cache
+The root [Dockerfile](Dockerfile) builds the frontend and API into one non-root container. [render.yaml](render.yaml) defines a single Render Free service with managed HTTPS, no database, and automatic deployments disabled. Free-tier sleeping and usage limits apply; see [Render's documentation](https://render.com/docs/free).
 
-## Caching
+1. Create a Render Blueprint from the branch containing these changes.
+2. Supply `SOLANA_RPC_URL` and `HELIUS_API_KEY` as secret environment variables. Add `SOLSNIFFER_API_KEY` to enable SolSniffer; leave it empty to omit that provider. RugCheck can use its public endpoint or an optional `RUGCHECK_API_KEY`.
+3. Leave `VITE_API_URL` unset for the combined container. Render supplies `PORT`; the API serves the built frontend from `STATIC_DIR`.
+4. Deploy after the repository checks pass, then verify `/health`, a wallet report and a small batch at the public URL.
 
-Both single wallet checks and sybil scans use localStorage caching:
-- Cache duration: 24 hours
-- Automatic cache expiration
-- "Force Refresh" button to bypass cache
-- Visual indicators show cached results with timestamps
+Provider credentials stay on the backend. Environment files and local notes are excluded from Git and container builds. Configure free provider plans and account usage controls separately: process-local budgets reset on restart and do not enforce account-wide monthly quotas. SolSniffer's [Free plan](https://www.solsniffer.com/api-service) includes 100 calls/month.
 
-## Development
-
-### Backend Development
-
-The backend is built with Rust and uses:
-- Solana RPC for on-chain data
-- Optional RugCheck/Solsniffer integrations
-- Custom reputation scoring algorithm
-
-### Frontend Development
-
-The frontend uses:
-- React + TypeScript
-- Vite for build tooling
-- Canvas-based cluster graph visualization
-- localStorage for caching
-
-## License
-
-[Add your license here]
+See [service limits](DOCUMENTATION.md#service-limits) and [provider configuration](backend/README.md#token-provider-setup-and-diagnostics). The [Checks workflow](.github/workflows/checks.yml) runs unit tests, mock API/browser checks, and a container smoke test without live provider credentials.

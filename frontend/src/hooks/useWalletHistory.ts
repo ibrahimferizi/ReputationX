@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { HistoryEntry } from "../types/api";
 
-const STORAGE_KEY = "walletguard_history";
+const STORAGE_KEY = "walletguard_history_activity_v3";
 const MAX_ENTRIES = 5;
 
 function readHistory(): HistoryEntry[] {
@@ -16,11 +16,8 @@ function readHistory(): HistoryEntry[] {
 }
 
 export function useWalletHistory() {
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>(readHistory);
 
-  useEffect(() => {
-    setHistory(readHistory());
-  }, []);
 
   const addEntry = useCallback((entry: Omit<HistoryEntry, "checkedAt">) => {
     setHistory((prev) => {

@@ -20,8 +20,6 @@ pub struct TransactionHistory {
     pub wallet_age_days: f64,
     pub first_activity_unix: Option<i64>,
     pub max_txs_per_hour: u32,
-    pub max_txs_first_day: u32,
-    pub mean_interval_hours: f64,
     pub interval_cv: f64,
     pub scan_source: String,
     /// How first activity was resolved: helius_gtfa | pagination | unknown
@@ -31,7 +29,8 @@ pub struct TransactionHistory {
 #[derive(Debug, Deserialize)]
 struct SignatureInfo {
     signature: String,
-    blockTime: Option<i64>,
+    #[serde(rename = "blockTime")]
+    block_time: Option<i64>,
     err: Option<Value>,
 }
 
@@ -50,17 +49,17 @@ pub async fn get_transactions(
 ) -> Result<TransactionHistory> {
     if let Some(ref api_key) = config.helius_api_key {
         if config.scan_mode != ScanMode::Deep {
-            if let Ok(timestamps) =
-                helius::fetch_recent_timestamps(http, api_key, address, config.helius_tx_limit).await
+            if let Ok(recent) =
+                helius::fetch_recent_timestamps(http, api_key, address, config.helius_tx_limit)
+                    .await
             {
-                if !timestamps.is_empty() {
+                if recent.fetched_count > 0 {
                     let (first_activity_unix, age_capped, age_source) =
                         fetch_first_activity_unix(history_rpc, config, address).await?;
-                    let count = timestamps.len() as u64;
                     return Ok(build_history(
-                        timestamps,
-                        count,
-                        false,
+                        recent.timestamps,
+                        recent.successful_count,
+                        recent.fetched_count >= config.helius_tx_limit as usize,
                         age_capped,
                         first_activity_unix,
                         "helius",
@@ -90,7 +89,10 @@ async fn fetch_via_rpc_signatures(
 
     loop {
         if pages > 0 && config.signature_page_delay_ms > 0 {
-            sleep(std::time::Duration::from_millis(config.signature_page_delay_ms)).await;
+            sleep(std::time::Duration::from_millis(
+                config.signature_page_delay_ms,
+            ))
+            .await;
         }
 
         let batch: Vec<SignatureInfo> = rpc
@@ -122,12 +124,12 @@ async fn fetch_via_rpc_signatures(
     let timestamps_sec: Vec<i64> = all_signatures
         .iter()
         .filter(|s| s.err.is_none())
-        .filter_map(|s| s.blockTime.map(normalize_unix_timestamp))
+        .filter_map(|s| s.block_time.map(normalize_unix_timestamp))
         .collect();
 
     Ok(build_history(
         timestamps_sec,
-        all_signatures.len() as u64,
+        all_signatures.iter().filter(|s| s.err.is_none()).count() as u64,
         count_capped,
         age_capped,
         first_activity_unix,
@@ -145,9 +147,8 @@ pub async fn fetch_first_activity_unix(
     match helius::try_gtfa_first_activity(config, rpc, address).await {
         Ok(Some(ts)) => return Ok((Some(ts), false, "helius_gtfa".into())),
         Ok(None) => tracing::debug!("getTransactionsForAddress asc returned no txs"),
-        Err(err) => {
+        Err(_err) => {
             tracing::warn!(
-                error = %err,
                 "getTransactionsForAddress failed; falling back to signature pagination"
             );
         }
@@ -162,7 +163,10 @@ pub async fn fetch_first_activity_unix(
 
     loop {
         if pages > 0 && config.signature_page_delay_ms > 0 {
-            sleep(std::time::Duration::from_millis(config.signature_page_delay_ms)).await;
+            sleep(std::time::Duration::from_millis(
+                config.signature_page_delay_ms,
+            ))
+            .await;
         }
 
         let batch: Vec<SignatureInfo> = rpc
@@ -187,7 +191,7 @@ pub async fn fetch_first_activity_unix(
             if sig.err.is_some() {
                 continue;
             }
-            if let Some(bt) = sig.blockTime {
+            if let Some(bt) = sig.block_time {
                 let t = normalize_unix_timestamp(bt);
                 oldest = Some(oldest.map(|o| o.min(t)).unwrap_or(t));
             }
@@ -254,21 +258,8 @@ fn build_history(
         wallet_age_from_first_activity(first_activity_unix);
 
     let max_txs_per_hour = max_in_window(&timestamps_sec, 3600);
-    let max_txs_first_day = if let Some(first) = timestamps_sec.first() {
-        timestamps_sec
-            .iter()
-            .filter(|ts| **ts <= first + 86_400)
-            .count() as u32
-    } else {
-        0
-    };
 
     let intervals = interval_hours(&timestamps_sec);
-    let mean_interval_hours = if intervals.is_empty() {
-        0.0
-    } else {
-        intervals.iter().sum::<f64>() / intervals.len() as f64
-    };
     let interval_cv = coefficient_of_variation(&intervals);
 
     TransactionHistory {
@@ -279,8 +270,6 @@ fn build_history(
         wallet_age_days,
         first_activity_unix,
         max_txs_per_hour,
-        max_txs_first_day,
-        mean_interval_hours,
         interval_cv,
         scan_source: scan_source.to_string(),
         age_source,
@@ -349,8 +338,7 @@ fn coefficient_of_variation(values: &[f64]) -> f64 {
     if mean == 0.0 {
         return 0.0;
     }
-    let variance =
-        values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
     variance.sqrt() / mean
 }
 
@@ -386,7 +374,7 @@ mod tests {
         let now = chrono::Utc::now().timestamp();
         let thirty_days_ago = now - 30 * 86_400;
         let (days, _) = wallet_age_from_first_activity(Some(thirty_days_ago));
-        assert!(days >= 29.9 && days <= 30.1);
+        assert!((29.9..=30.1).contains(&days));
     }
 
     #[test]

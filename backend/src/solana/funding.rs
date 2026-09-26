@@ -80,8 +80,8 @@ pub async fn get_funding_source(
 ) -> FundingSource {
     match trace_funding_source(address, rpc_client, config).await {
         Ok(source) => source,
-        Err(err) => {
-            tracing::debug!(error = %err, %address, "funding source trace failed");
+        Err(_err) => {
+            tracing::debug!("funding source trace failed");
             FundingSource::unknown()
         }
     }
@@ -109,7 +109,7 @@ async fn trace_funding_source(
     )
     .await?;
     let Some(oldest_batch) = oldest_batch else {
-        tracing::warn!(%address, "funding trace: no signatures found");
+        tracing::warn!("funding trace: no signatures found");
         return Ok(FundingSource::unknown());
     };
 
@@ -129,7 +129,6 @@ async fn trace_funding_source(
     }
 
     tracing::warn!(
-        %address,
         candidates = candidate_count,
         "funding trace: could not resolve funder from oldest transactions"
     );
@@ -223,10 +222,7 @@ async fn fetch_parsed_transaction(rpc: &SolanaRpc, signature: &str) -> Result<Op
 fn extract_first_sol_inflow_sender(tx: &Value, destination: &str) -> Option<String> {
     let mut earliest: Option<(usize, String)> = None;
 
-    if let Some(message) = tx
-        .get("transaction")
-        .and_then(|t| t.get("message"))
-    {
+    if let Some(message) = tx.get("transaction").and_then(|t| t.get("message")) {
         scan_instructions(message.get("instructions"), destination, &mut earliest, 0);
     }
 
@@ -271,9 +267,10 @@ fn inflow_source_from_instruction(ix: &Value, destination: &str) -> Option<Strin
     let kind = parsed.get("type").and_then(|t| t.as_str())?;
 
     match kind {
-        "transfer" if info.get("destination").and_then(|d| d.as_str()) == Some(destination) => {
-            info.get("source").and_then(|s| s.as_str()).map(str::to_string)
-        }
+        "transfer" if info.get("destination").and_then(|d| d.as_str()) == Some(destination) => info
+            .get("source")
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
         "transferWithSeed"
             if info.get("toPubkey").and_then(|d| d.as_str()) == Some(destination) =>
         {
@@ -282,12 +279,16 @@ fn inflow_source_from_instruction(ix: &Value, destination: &str) -> Option<Strin
                 .map(str::to_string)
         }
         "createAccount" if info.get("newAccount").and_then(|d| d.as_str()) == Some(destination) => {
-            info.get("source").and_then(|s| s.as_str()).map(str::to_string)
+            info.get("source")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
         }
         "createAccountWithSeed"
             if info.get("newAccount").and_then(|d| d.as_str()) == Some(destination) =>
         {
-            info.get("source").and_then(|s| s.as_str()).map(str::to_string)
+            info.get("source")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
         }
         _ => None,
     }
@@ -423,10 +424,7 @@ fn transaction_involves_bridge(tx: &Value) -> bool {
 fn collect_program_ids(tx: &Value) -> Vec<String> {
     let mut ids = Vec::new();
 
-    if let Some(message) = tx
-        .get("transaction")
-        .and_then(|t| t.get("message"))
-    {
+    if let Some(message) = tx.get("transaction").and_then(|t| t.get("message")) {
         push_program_ids(message.get("instructions"), &mut ids);
     }
 
@@ -501,10 +499,8 @@ mod tests {
                 "postBalances": [1_000_000_000, 1_000_000_000]
             }
         });
-        let sender = extract_funding_from_balance_changes(
-            &tx,
-            "Target1111111111111111111111111111111111",
-        );
+        let sender =
+            extract_funding_from_balance_changes(&tx, "Target1111111111111111111111111111111111");
         assert_eq!(
             sender.as_deref(),
             Some("Funder1111111111111111111111111111111111111")
@@ -530,10 +526,8 @@ mod tests {
                 }
             }
         });
-        let sender = extract_first_sol_inflow_sender(
-            &tx,
-            "Target1111111111111111111111111111111111",
-        );
+        let sender =
+            extract_first_sol_inflow_sender(&tx, "Target1111111111111111111111111111111111");
         assert_eq!(
             sender.as_deref(),
             Some("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM")

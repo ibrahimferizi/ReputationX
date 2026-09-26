@@ -1,44 +1,36 @@
-# WalletGuard Frontend (React + Vite)
+# WalletGuard frontend
 
-Interactive dashboard for analyzing Solana wallet reputation and sybil risk.
-
-## Features
-
-- **Sybil Scanner**: Scan multiple wallets for cluster activity and suspicious behavior
-- **Reputation Analysis**: Detailed wallet metrics (token holdings, transaction patterns, DeFi interaction)
-- **Cluster Visualization**: Graph view of detected sybil clusters and relationships
-- **Response Caching**: 24-hour cache to reduce backend load on repeated scans
-- **Error Boundaries**: Graceful error handling with clear user feedback
-
-## Run
+React + TypeScript + Vite dashboard. Requires Node.js 24+; use `nvm use` if available.
 
 ```bash
-cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-The dev server proxies `/api/*` to the backend (http://localhost:3001). To point to a different backend, set:
+Open http://localhost:5173 with the Rust API running on port 3001. The development server proxies `/api` and `/health` to the API.
+
+`VITE_API_URL` defaults to the same origin. For a separate API domain, set it before `npm run build` and configure `CORS_ALLOWED_ORIGINS` on the API. See `.env.example`. Never put provider secrets into `VITE_*` variables; they become public browser code.
 
 ```bash
-VITE_API_URL=https://api.example.com npm run dev
-```
-
-## Build
-
-```bash
+npm test
+npm run lint
 npm run build
 npm run preview
 ```
 
-## Environment Variables
+The tests use Node's built-in runner and TypeScript stripping, with no test-framework dependencies. Preview serves the static build; the Vite development proxy does not apply there.
 
-- `VITE_API_URL` – Backend API base URL (optional; defaults to same origin)
+- `App.tsx`: wallet report, tabs and recent checks.
+- `SybilScanner.tsx`: batch input and results; scans deduplicate addresses.
+- `ClusterGraph.tsx`: custom Canvas simulation, dragging and hover details.
+- `utils/cache.ts`: Five-minute wallet cache and last complete batch response. Batch cache reuse requires the exact address set, preserving server-computed clusters and flagged counts. Partial hits trigger a full batch request.
+- `utils/normalizeReport.ts`: normalizes single-wallet API responses.
+- `utils/address.ts`: checks that Base58 input decodes to 32 bytes using [bs58](https://github.com/cryptocoinjs/bs58).
 
-## Key Components
+See [the project README](../README.md) for setup and [technical documentation](../DOCUMENTATION.md) for report semantics and limitations.
 
-- **SybilScanner** – Main component for batch wallet scanning with progress tracking
-- **ClusterGraph** – D3-based visualization of sybil clusters
-- **ReputationDashboard** – Detailed metrics and alerts for a single wallet
-- **Cache** – localStorage-based caching layer (24-hour TTL per wallet)
+## Current report behavior
 
+The UI uses `walletguard-v2` coverage metadata and `activity-v3` scores. The `ScanCoverage` component is available on both screens, including wallets without flags. `unknown` risks display a neutral question mark. DeFi values remain null rather than being converted to zero. Unknown checks do not count as individual risk flags, but confirmed high-risk metrics still do.
+
+The score cache and session-history namespaces were changed for this scoring version; old results are not reused. Restart the API and refresh the page after updating. Tests include actual coverage/icon server rendering using the existing TypeScript compiler.

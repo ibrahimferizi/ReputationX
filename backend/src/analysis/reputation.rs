@@ -2,13 +2,13 @@ use crate::analysis::improvements::build_improvement_steps;
 use crate::analysis::risk::{
     assess_balance, assess_burst, assess_defi, assess_nfts, assess_spacing, assess_token_risk,
     assess_tx_count, assess_wallet_age, compute_reputation_score, raw_to_trust_rating,
-    MetricAssessment,
+    unknown_metric, MetricAssessment, SCORING_VERSION,
 };
 use crate::config::Config;
 use crate::integrations::{scan_wallet_tokens, ExternalScans};
 use crate::models::response::{
-    DefiExposure, LegacyReputationResponse, MetricDto, ReputationResponse, TokenRiskDto,
-    TxStats, WalletAge,
+    DefiExposure, LegacyReputationResponse, MetricDto, ReputationResponse, ScanCoverage,
+    TokenRiskDto, TxStats, WalletAge,
 };
 use crate::solana::funding::get_funding_source;
 use crate::solana::rpc::SolanaRpc;
@@ -16,13 +16,6 @@ use crate::solana::transactions::get_transactions;
 use crate::solana::wallet::{get_balance, get_token_holdings};
 use anyhow::Result;
 use reqwest::Client;
-use std::time::Duration;
-
-const KNOWN_DEFI_PROGRAMS: &[&str] = &[
-    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
-    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrGrhN",
-];
 
 pub async fn build_wallet_reputation(
     http: &Client,
@@ -42,27 +35,18 @@ pub async fn build_wallet_reputation(
     let (balance, history, holdings) = (balance?, history?, holdings?);
 
     let external = if config.skip_external_scans || holdings.mints.is_empty() {
-        ExternalScans {
-            rugcheck: vec![],
-            solsniffer: vec![],
-            honeypot_detected: false,
-            high_risk_tokens: 0,
-        }
+        ExternalScans::default()
     } else {
-        tokio::time::timeout(
-            Duration::from_secs(8),
-            scan_wallet_tokens(http, config, &holdings.mints),
-        )
-        .await
-        .unwrap_or(ExternalScans {
-            rugcheck: vec![],
-            solsniffer: vec![],
-            honeypot_detected: false,
-            high_risk_tokens: 0,
-        })
+        scan_wallet_tokens(http, config, &holdings.mints).await
     };
-
-    let defi_interactions = estimate_defi_interactions(&history.timestamps_sec);
+    let token_coverage = external.coverage(
+        holdings.mints.len(),
+        config.max_token_scans,
+        config.skip_external_scans,
+        config.solsniffer_api_key.is_some(),
+    );
+    let sampled = history.count_capped || history.scan_source == "helius";
+    let spacing_cv = (history.timestamps_sec.len() >= 3).then_some(history.interval_cv);
     let burst_high = history.max_txs_per_hour >= 15 && history.wallet_age_days < 14.0;
 
     let metrics: Vec<MetricAssessment> = vec![
@@ -71,27 +55,36 @@ pub async fn build_wallet_reputation(
             history.age_capped,
             history.first_activity_unix.is_none(),
         ),
-        assess_tx_count(
-            history.total_count,
-            history.count_capped,
-            history.wallet_age_days,
-        ),
-        assess_burst(history.max_txs_per_hour, history.wallet_age_days),
-        assess_spacing(history.interval_cv, history.wallet_age_days, burst_high),
+        assess_tx_count(history.total_count, sampled, history.wallet_age_days),
+        if history.timestamps_sec.len() < 2
+            || history.first_activity_unix.is_none()
+            || history.age_capped
+        {
+            unknown_metric("tx_burst", "Transaction Burst Pattern", "Insufficient data", "The age-based burst rule needs resolved wallet age and at least two timed transactions.")
+        } else {
+            assess_burst(history.max_txs_per_hour, history.wallet_age_days)
+        },
+        if let Some(cv) = spacing_cv {
+            assess_spacing(cv, history.wallet_age_days, burst_high)
+        } else {
+            unknown_metric("tx_spacing", "Transaction Spacing", "Insufficient data", "At least three successful transactions with timestamps are needed to assess spacing.")
+        },
         assess_balance(balance.sol),
         assess_nfts(holdings.estimated_nft_count),
-        assess_token_risk(external.high_risk_tokens, external.honeypot_detected),
-        assess_defi(defi_interactions),
+        assess_token_risk(
+            external.high_risk_tokens,
+            external.honeypot_detected,
+            &token_coverage,
+        ),
+        assess_defi(),
     ];
 
     let reputation_score = compute_reputation_score(
         history.wallet_age_days,
         history.total_count,
         history.max_txs_per_hour,
-        history.interval_cv,
+        spacing_cv,
         balance.sol,
-        external.honeypot_detected,
-        external.high_risk_tokens,
     );
 
     let trust = raw_to_trust_rating(reputation_score);
@@ -105,6 +98,7 @@ pub async fn build_wallet_reputation(
         tx_stats: TxStats {
             count: history.total_count,
             capped: history.count_capped,
+            sampled,
             max_per_hour: history.max_txs_per_hour,
         },
         wallet_age: WalletAge {
@@ -117,13 +111,14 @@ pub async fn build_wallet_reputation(
             count: holdings.estimated_nft_count as u64,
         },
         defi_exposure: DefiExposure {
-            total_usd: 0.0,
-            interaction_count: defi_interactions,
+            total_usd: None,
+            interaction_count: None,
         },
     };
 
     Ok(ReputationResponse {
         address: address.to_string(),
+        generated_at: None,
         legacy,
         metrics: metrics.into_iter().map(MetricDto::from).collect(),
         improvement_steps,
@@ -135,27 +130,36 @@ pub async fn build_wallet_reputation(
             &external,
         ),
         funding_source,
-        api_version: "walletguard-v1".into(),
+        api_version: "walletguard-v2".into(),
+        scoring_version: SCORING_VERSION.into(),
+        coverage: ScanCoverage {
+            history_source: history.scan_source.clone(),
+            timed_transactions: history.timestamps_sec.len(),
+            sample_start_unix: history.timestamps_sec.first().copied(),
+            sample_end_unix: history.timestamps_sec.last().copied(),
+            token_scans: token_coverage,
+        },
     })
-}
-
-fn estimate_defi_interactions(timestamps: &[i64]) -> usize {
-    if timestamps.is_empty() {
-        return 0;
-    }
-    (timestamps.len() / 50).min(200)
 }
 
 fn map_token_risks(external: &ExternalScans) -> Vec<TokenRiskDto> {
     external
         .rugcheck
         .iter()
-        .map(|r| TokenRiskDto {
-            mint: r.mint.clone(),
-            rugcheck_score: r.score,
-            honeypot: r.is_honeypot,
-            flags: r.flags.clone(),
-            available: r.available,
+        .map(|rug| {
+            let sniff = external
+                .solsniffer
+                .iter()
+                .find(|scan| scan.mint == rug.mint);
+            TokenRiskDto {
+                mint: rug.mint.clone(),
+                rugcheck_score: rug.score,
+                solsniffer_score: sniff.and_then(|scan| scan.snifscore),
+                solsniffer_checked_at: sniff.and_then(|scan| scan.checked_at.clone()),
+                honeypot: rug.is_honeypot,
+                flags: rug.flags.clone(),
+                available: rug.available || sniff.is_some_and(|scan| scan.available),
+            }
         })
         .collect()
 }
