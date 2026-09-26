@@ -15,10 +15,10 @@ const SUSPICION_COLORS: Record<ClusterSuspicion, string> = {
 };
 
 function getScoreColor(score: number): string {
-  if (score <= 20) return "#E24B4A"; // Red - very high risk
-  if (score <= 40) return "#EF9F27"; // Orange - high risk
-  if (score <= 60) return "#F5C542"; // Yellow - medium risk
-  if (score <= 80) return "#639922"; // Green - low risk
+  if (score <= 20) return "#E24B4A"; // Lower activity score
+  if (score <= 40) return "#EF9F27"; // Lower activity score
+  if (score <= 60) return "#F5C542"; // Midrange activity score
+  if (score <= 80) return "#639922"; // Higher activity score
   return "#4CAF50"; // Light green - good
 }
 
@@ -204,7 +204,7 @@ export function ClusterGraph({ clusters, cleanWallets, elevatedRiskWallets }: Cl
     if (!container) return;
 
     const updateWidth = () => {
-      setWidth(Math.max(320, container.clientWidth));
+      setWidth(Math.max(240, container.clientWidth));
     };
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
@@ -217,8 +217,11 @@ export function ClusterGraph({ clusters, cleanWallets, elevatedRiskWallets }: Cl
     simRef.current = { nodes, edges, width };
     dragRef.current = null;
     hoverRef.current = null;
-    setTooltip(null);
-    setCursor("grab");
+    const frame = requestAnimationFrame(() => {
+      setTooltip(null);
+      setCursor("grab");
+    });
+    return () => cancelAnimationFrame(frame);
   }, [graphKey, width, buildSimulation]);
 
   useEffect(() => {
@@ -252,8 +255,8 @@ export function ClusterGraph({ clusters, cleanWallets, elevatedRiskWallets }: Cl
 
         for (let j = i + 1; j < nodes.length; j++) {
           const b = nodes[j];
-          let dx = a.x - b.x;
-          let dy = a.y - b.y;
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
           let distSq = dx * dx + dy * dy;
           if (distSq < 1) distSq = 1;
           const dist = Math.sqrt(distSq);
@@ -553,7 +556,7 @@ function TooltipContent({ node }: { node: SimNode }) {
   if (node.kind === "clean") {
     return (
       <>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Clean wallet</div>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>No flags detected</div>
         <div style={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
           {node.address}
         </div>
@@ -564,7 +567,7 @@ function TooltipContent({ node }: { node: SimNode }) {
   if (node.kind === "elevated") {
     return (
       <>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Elevated risk wallet</div>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Wallet with individual flags</div>
         <div style={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
           {node.address}
         </div>
@@ -604,13 +607,13 @@ function TooltipContent({ node }: { node: SimNode }) {
 }
 
 const LEGEND_ITEMS = [
-  { color: "#E24B4A", dot: 7, label: "Score 0-20 (Very High Risk)", opacity: 0.95 },
-  { color: "#EF9F27", dot: 7, label: "Score 21-40 (High Risk)", opacity: 0.95 },
-  { color: "#F5C542", dot: 7, label: "Score 41-60 (Medium Risk)", opacity: 0.95 },
-  { color: "#639922", dot: 7, label: "Score 61-80 (Low Risk)", opacity: 0.95 },
-  { color: "#4CAF50", dot: 7, label: "Score 81-100 (Good)", opacity: 0.95 },
+  { color: "#E24B4A", dot: 7, label: "Activity score 1–20", opacity: 0.95 },
+  { color: "#EF9F27", dot: 7, label: "Activity score 21–40", opacity: 0.95 },
+  { color: "#F5C542", dot: 7, label: "Activity score 41–60", opacity: 0.95 },
+  { color: "#639922", dot: 7, label: "Activity score 61–80", opacity: 0.95 },
+  { color: "#4CAF50", dot: 7, label: "Activity score 81–100", opacity: 0.95 },
   { color: MEMBER_COLOR, dot: 6, label: "Cluster member", opacity: 0.5 },
-  { color: CLEAN_COLOR, dot: 6, label: "Clean wallet", opacity: 0.7 },
+  { color: CLEAN_COLOR, dot: 6, label: "No flags detected", opacity: 0.7 },
 ] as const;
 
 function funderPosition(

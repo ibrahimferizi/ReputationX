@@ -1,73 +1,36 @@
-# React + TypeScript + Vite
+# WalletGuard frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite dashboard. Requires Node.js 24+; use `nvm use` if available.
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open http://localhost:5173 with the Rust API running on port 3001. The development server proxies `/api` and `/health` to the API.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+`VITE_API_URL` defaults to the same origin. For a separate API domain, set it before `npm run build` and configure `CORS_ALLOWED_ORIGINS` on the API. See `.env.example`. Never put provider secrets into `VITE_*` variables; they become public browser code.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm test
+npm run lint
+npm run build
+npm run preview
 ```
+
+The tests use Node's built-in runner and TypeScript stripping, with no test-framework dependencies. Preview serves the static build; the Vite development proxy does not apply there.
+
+- `App.tsx`: wallet report, tabs and recent checks.
+- `SybilScanner.tsx`: batch input and results; scans deduplicate addresses.
+- `ClusterGraph.tsx`: custom Canvas simulation, dragging and hover details.
+- `utils/cache.ts`: Five-minute wallet cache and last complete batch response. Batch cache reuse requires the exact address set, preserving server-computed clusters and flagged counts. Partial hits trigger a full batch request.
+- `utils/normalizeReport.ts`: normalizes single-wallet API responses.
+- `utils/address.ts`: checks that Base58 input decodes to 32 bytes using [bs58](https://github.com/cryptocoinjs/bs58).
+
+See [the project README](../README.md) for setup and [technical documentation](../DOCUMENTATION.md) for report semantics and limitations.
+
+## Current report behavior
+
+The UI uses `walletguard-v2` coverage metadata and `activity-v3` scores. The `ScanCoverage` component is available on both screens, including wallets without flags. `unknown` risks display a neutral question mark. DeFi values remain null rather than being converted to zero. Unknown checks do not count as individual risk flags, but confirmed high-risk metrics still do.
+
+The score cache and session-history namespaces were changed for this scoring version; old results are not reused. Restart the API and refresh the page after updating. Tests include actual coverage/icon server rendering using the existing TypeScript compiler.

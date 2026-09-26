@@ -1,0 +1,47 @@
+# One free instance serves both the built UI and API; no database or paid add-ons.
+services:
+  - type: web
+    name: walletguard
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    envVars:
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: SOLSNIFFER_API_KEY
+        sync: false
+      - key: SOLSNIFFER_MAX_CALLS_PER_RUN
+        value: "90"
+      - key: SCAN_MODE
+        value: fast
+      - key: SKIP_EXTERNAL_SCANS
+        value: "false"
+      - key: MAX_TOKEN_SCANS
+        value: "2"
+      - key: MAX_AGE_SIGNATURE_PAGES
+        value: "3"
+      - key: FUNDING_MAX_SIGNATURE_PAGES
+        value: "3"
+      - key: RPC_MAX_RETRIES
+        value: "1"
+      - key: RPC_GLOBAL_CONCURRENCY
+        value: "3"
+      - key: MAX_ACTIVE_REQUESTS
+        value: "4"
+      - key: MAX_ACTIVE_SCANS
+        value: "2"
+      - key: FRESH_SCANS_PER_HOUR
+        value: "20"
+      - key: CACHE_TTL_SECONDS
+        value: "900"
+      - key: CACHE_MAX_WALLETS
+        value: "128"
+      - key: IP_SCAN_UNITS_PER_MINUTE
+        value: "30"
+      - key: TRUSTED_PROXY_IPS
+        value: ""

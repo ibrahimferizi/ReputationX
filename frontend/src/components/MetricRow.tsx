@@ -31,7 +31,7 @@ export function MetricRow({ metric, improvement }: MetricRowProps) {
           className="improve-toggle"
           onClick={() => setOpen((v) => !v)}
         >
-          {open ? "Hide" : "Show"} steps to improve
+          {open ? "Hide" : "Show"} review notes
         </button>
       )}
 

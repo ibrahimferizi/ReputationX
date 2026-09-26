@@ -1,5 +1,7 @@
+import { apiError } from "./utils/apiError";
 import { useMemo, useState, type CSSProperties } from "react";
-import { PublicKey } from "@solana/web3.js";
+import { isSolanaAddress } from "./utils/address";
+import { ScanCoverage } from "./components/ScanCoverage";
 import { MetricRow } from "./components/MetricRow";
 import { SybilScanner } from "./components/SybilScanner";
 import { useWalletHistory } from "./hooks/useWalletHistory";
@@ -57,23 +59,16 @@ function App() {
     }
 
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 180_000);
 
     try {
-      new PublicKey(address);
+      if (!isSolanaAddress(address)) throw new Error("Enter a valid Solana address.");
       const response = await fetch(
         `${API_BASE}/api/reputation?address=${encodeURIComponent(address)}`,
         { signal: controller.signal }
       );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          (errorData as { error?: string; details?: string }).error ||
-            (errorData as { details?: string }).details ||
-            "Failed to fetch reputation data"
-        );
-      }
+      if (!response.ok) throw await apiError(response);
 
       const raw = await response.json();
       const data = normalizeReport(raw as Record<string, unknown>);
@@ -91,7 +86,7 @@ function App() {
         err instanceof Error ? err.message : "Failed to check wallet";
       if (err instanceof DOMException && err.name === "AbortError") {
         message =
-          "Request timed out after 45s. Set SCAN_MODE=fast and HELIUS_API_KEY in backend .env, then restart.";
+          "The request took too long. The free service may be waking up; wait a minute and retry.";
       }
       setError(message);
     } finally {
@@ -106,7 +101,7 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>Wallet Guard</h1>
-        <p>Solana wallet trust score (1–100) — WalletGuard reputation API</p>
+        <p>Solana wallet activity score (1–100) and scan evidence</p>
       </header>
 
       <nav
@@ -207,7 +202,7 @@ function App() {
                 opacity: loading || !walletAddress.trim() ? 0.5 : 1,
               }}
             >
-              {loading ? "Refreshing…" : "Force Refresh"}
+              {loading ? "Refreshing…" : "Refresh"}
             </button>
           </div>
 
@@ -263,22 +258,8 @@ function App() {
                 </div>
               </div>
 
-              {report.wallet_age?.age_capped && (
-                <p className="warn-banner">
-                  Wallet age may be too low. Set <code>HELIUS_API_KEY</code> in{" "}
-                  <code>backend/.env</code> (enables one-call oldest tx), or raise{" "}
-                  <code>MAX_AGE_SIGNATURE_PAGES</code>. age_source=
-                  {String(report.integrations?.age_source ?? "?")}, scan_mode=
-                  {String(report.integrations?.scan_mode ?? "?")} (tx scan only), max_age_pages=
-                  {String(report.integrations?.max_age_signature_pages ?? "?")}.
-                </p>
-              )}
-              {report.tx_stats?.capped && !report.wallet_age?.age_capped && (
-                <p className="warn-banner">
-                  Transaction count is a lower bound (scan stopped at the page limit). Raise{" "}
-                  <code>MAX_SIGNATURE_PAGES</code> in <code>backend/.env</code> and restart the API.
-                </p>
-              )}
+              <p className="score-context">Heuristic score based on observed history, timing and SOL balance. Token findings are separate and do not change this score. It does not establish wallet safety or ownership.</p>
+              <ScanCoverage report={report} />
 
               <h3>Parameters</h3>
               <div className="metrics">
@@ -297,10 +278,14 @@ function App() {
                   <ul className="token-risks">
                     {(report.token_risks ?? []).map((t) => (
                       <li key={t.mint}>
-                        <span className="mono">{shorten(t.mint)}</span>
+                        <span className="mono" title={t.mint}>{shorten(t.mint)}</span>
+                        {!t.available && <span className="tag">Result unavailable</span>}
+                        {t.solsniffer_score != null && <span className="tag">SolSniffer score {t.solsniffer_score}/100</span>}
+                        {t.flags.length > 0 && <span>{t.flags.join("; ")}</span>}
+                        {t.solsniffer_checked_at && <span>SolSniffer checked {new Date(t.solsniffer_checked_at).toLocaleString()}</span>}
                         {t.honeypot && <span className="tag danger">Honeypot</span>}
                         {t.rugcheck_score != null && (
-                          <span className="tag">Score {t.rugcheck_score}</span>
+                          <span className="tag">RugCheck risk score {t.rugcheck_score} (higher = more risk)</span>
                         )}
                       </li>
                     ))}
@@ -308,12 +293,21 @@ function App() {
                 </>
               )}
 
-              <p className="api-version">API {report.api_version || "walletguard-v1"}</p>
+              <p className="api-version">API {report.api_version || "unknown"} · Scoring {report.scoring_version || "legacy"}</p>
             </section>
           )}
         </main>
       </div>
       )}
+      <footer className="score-context" style={{maxWidth: 960, margin: "2rem auto", padding: "1rem"}}>
+        <details>
+          <summary>About this beta · Data and privacy</summary>
+          <p>WalletGuard summarizes public Solana activity. Scores and shared-funding groups are unvalidated heuristics, not proof of identity, safety or common ownership. Missing data is disclosed in each report.</p>
+          <p>Submitted addresses are sent to the API and its configured Solana/Helius providers; selected token mints are sent to RugCheck and, when enabled, SolSniffer. Reports are cached briefly in server memory and in this browser. Recent-check history lasts for this browser session. No wallet connection, signature or login is required.</p>
+          <p>The API uses connection IP addresses for temporary rate limits. Hosting and API providers process requests under their own policies. The app includes no analytics. Free hosting can sleep, and scans may pause when usage limits are reached.</p>
+          <button type="button" onClick={() => { for (const key of Object.keys(localStorage)) if (key.startsWith("walletguard_")) localStorage.removeItem(key); for (const key of Object.keys(sessionStorage)) if (key.startsWith("walletguard_")) sessionStorage.removeItem(key); window.location.reload(); }}>Clear WalletGuard data in this browser</button>
+        </details>
+      </footer>
     </div>
   );
 }

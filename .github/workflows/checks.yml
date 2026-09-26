@@ -1,0 +1,60 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [master, main, version_3]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm run build
+          npm audit --audit-level=high
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+      - name: Backend
+        run: |
+          cargo fmt --manifest-path backend/Cargo.toml -- --check
+          cargo test --locked --manifest-path backend/Cargo.toml
+          cargo clippy --locked --manifest-path backend/Cargo.toml --all-targets -- -D warnings
+          cargo build --locked --manifest-path backend/Cargo.toml
+          python3 backend/tests/api_smoke.py
+          python3 backend/tests/public_smoke.py
+      - name: Production browser checks (mock providers only)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/walletguard-browser" --no-save playwright@1.63.0
+          "$RUNNER_TEMP/walletguard-browser/node_modules/.bin/playwright" install --with-deps chromium
+          PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/walletguard-browser/node_modules/playwright" python3 backend/tests/browser_smoke.py
+      - name: Container build and health check (no upstream calls)
+        run: |
+          docker build -t walletguard:check .
+          docker run -d --name walletguard-check -p 127.0.0.1:3001:3001 walletguard:check
+          trap 'docker rm -f walletguard-check' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3001/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:3001/health
+          curl --fail --silent http://127.0.0.1:3001/ | grep 'id="root"'
+          test "$(docker inspect --format '{{.Config.User}}' walletguard-check)" = '65532:65532'

@@ -64,8 +64,8 @@ pub struct Config {
     pub rugcheck_api_key: Option<String>,
     pub solsniffer_base_url: String,
     pub solsniffer_api_key: Option<String>,
-    pub tokensniffer_base_url: String,
-    pub tokensniffer_api_key: Option<String>,
+    pub solsniffer_state:
+        std::sync::Arc<tokio::sync::Mutex<crate::integrations::solsniffer::ScanState>>,
     pub max_token_scans: usize,
     /// Max concurrent wallets during `POST /api/sybil-scan`.
     pub sybil_scan_concurrency: usize,
@@ -130,13 +130,19 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.rugcheck.xyz".into()),
             rugcheck_api_key: env::var("RUGCHECK_API_KEY").ok().filter(|s| !s.is_empty()),
             solsniffer_base_url: env::var("SOLSNIFFER_BASE_URL")
-                .unwrap_or_else(|_| "https://api.solsniffer.com".into()),
-            solsniffer_api_key: env::var("SOLSNIFFER_API_KEY").ok().filter(|s| !s.is_empty()),
-            tokensniffer_base_url: env::var("TOKENSNIFFER_BASE_URL")
-                .unwrap_or_else(|_| "https://tokensniffer.com/api/v2".into()),
-            tokensniffer_api_key: env::var("TOKENSNIFFER_API_KEY")
+                .unwrap_or_else(|_| "https://solsniffer.com/api/v2".into()),
+            solsniffer_api_key: env::var("SOLSNIFFER_API_KEY")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            solsniffer_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::integrations::solsniffer::ScanState::new(
+                    env::var("SOLSNIFFER_MAX_CALLS_PER_RUN")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(90)
+                        .min(100),
+                ),
+            )),
             max_token_scans: env::var("MAX_TOKEN_SCANS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -164,7 +170,18 @@ impl Config {
 }
 
 fn append_helius_api_key(url: &str, api_key: Option<&str>) -> String {
-    if url.contains("api-key=") || url.contains("api_key=") {
+    let is_helius = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str().map(|host| {
+                host == "helius-rpc.com"
+                    || host.ends_with(".helius-rpc.com")
+                    || host == "helius.xyz"
+                    || host.ends_with(".helius.xyz")
+            })
+        })
+        .unwrap_or(false);
+    if !is_helius || url.contains("api-key=") || url.contains("api_key=") {
         return url.to_string();
     }
     let Some(key) = api_key.filter(|k| !k.is_empty()) else {
@@ -174,5 +191,30 @@ fn append_helius_api_key(url: &str, api_key: Option<&str>) -> String {
         format!("{url}&api-key={key}")
     } else {
         format!("{url}?api-key={key}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_helius_api_key;
+
+    #[test]
+    fn helius_key_stays_on_helius_hosts() {
+        for url in [
+            "https://rpc.example.com/",
+            "https://helius-rpc.com.example.com/",
+        ] {
+            assert_eq!(append_helius_api_key(url, Some("test-key")), url);
+        }
+        assert_eq!(
+            append_helius_api_key("https://mainnet.helius-rpc.com/", Some("test-key")),
+            "https://mainnet.helius-rpc.com/?api-key=test-key"
+        );
+    }
+
+    #[test]
+    fn preserves_existing_helius_key() {
+        let url = "https://mainnet.helius-rpc.com/?api-key=existing";
+        assert_eq!(append_helius_api_key(url, Some("other")), url);
     }
 }

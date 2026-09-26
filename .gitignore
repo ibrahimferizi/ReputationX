@@ -1,7 +1,7 @@
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Logs
 logs
@@ -18,7 +18,6 @@ node_modules/
 # Build outputs
 dist/
 dist-ssr/
-/target/
 *.so
 *.dll
 *.exe
@@ -39,3 +38,10 @@ Thumbs.db
 *.sln
 
 target/
+
+# Python smoke-test bytecode
+__pycache__/
+*.pyc
+
+# Local working notes
+/.local-notes/

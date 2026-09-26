@@ -4,7 +4,7 @@ pub mod rpc;
 pub mod transactions;
 pub mod wallet;
 
-pub use funding::{get_funding_source, FundingSource};
+pub use funding::FundingSource;
 
 use anyhow::{anyhow, Result};
 

@@ -48,11 +48,7 @@ impl SolanaRpc {
     }
 
     /// Call JSON-RPC with retries on rate limits (HTTP 429 / RPC error -32429 / message contains 429).
-    pub async fn call<T: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> Result<T> {
+    pub async fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
         let _permit = match &self.concurrency {
             Some(sem) => Some(
                 sem.acquire()
@@ -85,11 +81,7 @@ impl SolanaRpc {
         }
     }
 
-    async fn call_once<T: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> Result<T> {
+    async fn call_once<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
         let payload = jsonrpc_request(method, params);
         let response = self
             .client

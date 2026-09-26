@@ -4,7 +4,6 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::analysis::reputation::build_wallet_reputation;
 use crate::error::ApiError;
 use crate::models::response::ReputationResponse;
 use crate::solana;
@@ -29,15 +28,7 @@ pub async fn get_reputation(
 
     solana::validate_address(address).map_err(|_| ApiError::InvalidAddress)?;
 
-    let report = build_wallet_reputation(
-        &state.http,
-        &state.rpc,
-        &state.history_rpc,
-        &state.config,
-        address,
-    )
-        .await
-        .map_err(ApiError::internal)?;
+    let report = state.service.report(&state, address).await?;
 
     Ok(Json(report))
 }
